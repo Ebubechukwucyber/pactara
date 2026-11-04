@@ -2,7 +2,7 @@
 
 Agents can hire and pay other agents without being trusted with the money.
 
-Pactara is a NEAR contract that holds a prefunded treasury, reserves funds when an authorized buyer creates a task, and releases payment only to the original worker after verification. The hiring agent uses a restricted function-call key. The contract also enforces an on-chain buyer allowlist so arbitrary accounts cannot spend from the treasury.
+Pactara is a NEAR contract that holds a prefunded treasury, reserves funds when an authorized buyer creates a task for an authorized worker, and releases payment only to the original worker after independent signed verification. The hiring agent uses a restricted function-call key. The contract enforces buyer and worker allowlists, daily spending limits, and binds verification to the stored criteria and artifact hashes.
 
 ## How it works
 
@@ -11,7 +11,8 @@ Authorized Buyer (restricted key)
         │
         ▼
    create_task
-   (allowlist check)
+   (buyer + worker allowlist,
+    daily limit, amount checks)
         │
         ▼
 ┌─────────────────────┐
@@ -22,10 +23,11 @@ Authorized Buyer (restricted key)
 └─────────────────────┘
         │
         ▼
-   Worker submits artifact
+   Authorized Worker submits artifact
         │
         ▼
-   Verification (owner-gated MVP)
+   Signed verification
+   (verifier key, criteria/input/artifact hashes)
    ┌────┴────┐
    PASS     FAIL
    │         │
@@ -33,29 +35,23 @@ Authorized Buyer (restricted key)
  Pay worker  Refund
 ```
 
-## Guarantees (current)
+## Guarantees
 
 - Prefunded treasury with available / reserved accounting
-- On-chain buyer allowlist (only authorized buyers can create tasks)
+- On-chain buyer allowlist
+- On-chain worker allowlist
+- Daily spending limit
 - Worker and amount fixed at task creation
+- Independent signed verification bound to criteria, input, and artifact hashes
 - PASS settles to the original worker
 - FAIL or expiry refunds
 - Restricted key cannot call owner methods
 - One submission per task
 
-## Not yet implemented
-
-- Independent signed verifier (verification is owner-gated)
-- Criteria and input hash enforcement during verification
-- Daily spending limits
-- Worker allowlist
-
-These are documented as next steps. The settlement rules and buyer authorization are enforced today.
-
 ## Deployed
 
-- Contract: `pactara-v2.testnet`
-- Owner: `pactara-v2.testnet`
+- Contract: `pactara-v3.testnet`
+- Owner: `pactara-v3.testnet`
 
 ## Try it
 
@@ -65,7 +61,7 @@ chmod +x buyer_agent.sh demo.sh
 ./demo.sh
 ```
 
-Expected: an authorized buyer creates a task; the restricted key is rejected when it tries to withdraw.
+Expected: an authorized buyer creates a task for an authorized worker; the restricted key is rejected when it tries to withdraw; verification requires a valid signature from the registered verifier.
 
 ## Tracks
 

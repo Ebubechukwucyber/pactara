@@ -39,12 +39,16 @@ pub struct Pactara {
     verifier_public_key: Option<PublicKey>,
     used_nonces: LookupMap<u64, bool>,
     authorized_buyers: LookupMap<AccountId, bool>,
+    authorized_workers: LookupMap<AccountId, bool>,
+    daily_limit: u128,
+    daily_spent: u128,
+    current_day: u64,
 }
 
 #[near]
 impl Pactara {
     #[init]
-    pub fn new(owner: AccountId, max_amount_per_task: U128) -> Self {
+    pub fn new(owner: AccountId, max_amount_per_task: U128, daily_limit: U128) -> Self {
         let mut contract = Self {
             total: 0,
             available: 0,
@@ -56,10 +60,21 @@ impl Pactara {
             verifier_public_key: None,
             used_nonces: LookupMap::new(b"n"),
             authorized_buyers: LookupMap::new(b"b"),
+            authorized_workers: LookupMap::new(b"w"),
+            daily_limit: daily_limit.0,
+            daily_spent: 0,
+            current_day: env::block_timestamp() / 86_400_000_000_000,
         };
-        // Owner is authorized by default
         contract.authorized_buyers.insert(&owner, &true);
         contract
+    }
+
+    fn update_day(&mut self) {
+        let day = env::block_timestamp() / 86_400_000_000_000;
+        if day != self.current_day {
+            self.current_day = day;
+            self.daily_spent = 0;
+        }
     }
 
     #[payable]
@@ -79,9 +94,10 @@ impl Pactara {
         let _ = Promise::new(self.owner.clone()).transfer(NearToken::from_yoctonear(amount));
     }
 
-    pub fn set_policy(&mut self, max_amount_per_task: U128) {
+    pub fn set_policy(&mut self, max_amount_per_task: U128, daily_limit: U128) {
         assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
         self.max_amount_per_task = max_amount_per_task.0;
+        self.daily_limit = daily_limit.0;
         log!("Policy updated");
     }
 
@@ -95,6 +111,18 @@ impl Pactara {
         assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
         self.authorized_buyers.insert(&buyer, &false);
         log!("Removed buyer: {}", buyer);
+    }
+
+    pub fn add_authorized_worker(&mut self, worker: AccountId) {
+        assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
+        self.authorized_workers.insert(&worker, &true);
+        log!("Authorized worker: {}", worker);
+    }
+
+    pub fn remove_authorized_worker(&mut self, worker: AccountId) {
+        assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
+        self.authorized_workers.insert(&worker, &false);
+        log!("Removed worker: {}", worker);
     }
 
     pub fn register_verifier(&mut self, public_key: PublicKey) {
@@ -116,14 +144,25 @@ impl Pactara {
             self.authorized_buyers.get(&caller).unwrap_or(false),
             "Unauthorized buyer"
         );
+        assert!(
+            self.authorized_workers.get(&worker).unwrap_or(false),
+            "Unauthorized worker"
+        );
+
+        self.update_day();
 
         let amount = amount.0;
         assert!(amount > 0 && amount <= self.max_amount_per_task, "Invalid amount");
         assert!(amount <= self.available, "Insufficient available");
+        assert!(
+            self.daily_spent + amount <= self.daily_limit,
+            "Daily limit exceeded"
+        );
         assert!(verification_deadline > env::block_timestamp(), "Bad deadline");
 
         self.available -= amount;
         self.reserved += amount;
+        self.daily_spent += amount;
 
         let task_id = self.next_task_id;
         self.next_task_id += 1;
@@ -131,7 +170,7 @@ impl Pactara {
         let task = Task {
             id: task_id,
             buyer: caller,
-            worker,
+            worker: worker.clone(),
             amount,
             criteria_hash,
             input_hash,
@@ -141,7 +180,12 @@ impl Pactara {
             nonce_used: false,
         };
         self.tasks.insert(&task_id, &task);
-        log!("Task {} created | worker: {} | amount: {}", task_id, task.worker, amount);
+        log!(
+            "Task {} created | worker: {} | amount: {}",
+            task_id,
+            worker,
+            amount
+        );
         task_id
     }
 
@@ -149,7 +193,10 @@ impl Pactara {
         let mut task = self.tasks.get(&task_id).expect("Task not found");
         assert_eq!(env::predecessor_account_id(), task.worker, "Only worker");
         assert_eq!(task.state, TaskState::Funded, "Wrong state");
-        assert!(env::block_timestamp() < task.verification_deadline, "Deadline passed");
+        assert!(
+            env::block_timestamp() < task.verification_deadline,
+            "Deadline passed"
+        );
 
         task.artifact_hash = Some(artifact_hash);
         task.state = TaskState::Submitted;
@@ -157,14 +204,55 @@ impl Pactara {
         log!("Artifact submitted for task {}", task_id);
     }
 
-    pub fn submit_verification(&mut self, task_id: u64, passed: bool, _signature: Option<Vec<u8>>) {
-        let caller = env::predecessor_account_id();
-        assert_eq!(caller, self.owner, "Only owner for now");
-
+    pub fn submit_verification(
+        &mut self,
+        task_id: u64,
+        passed: bool,
+        criteria_hash: CryptoHash,
+        input_hash: CryptoHash,
+        artifact_hash: CryptoHash,
+        signature: Vec<u8>,
+    ) {
         let mut task = self.tasks.get(&task_id).expect("Task not found");
         assert_eq!(task.state, TaskState::Submitted, "Not in Submitted state");
         assert!(!task.nonce_used, "Nonce already used");
-        assert!(env::block_timestamp() < task.verification_deadline, "Deadline passed");
+        assert!(
+            env::block_timestamp() < task.verification_deadline,
+            "Deadline passed"
+        );
+
+        assert_eq!(task.criteria_hash, criteria_hash, "Criteria hash mismatch");
+        assert_eq!(task.input_hash, input_hash, "Input hash mismatch");
+        assert_eq!(
+            task.artifact_hash.unwrap(),
+            artifact_hash,
+            "Artifact hash mismatch"
+        );
+
+        let verifier_key = self
+            .verifier_public_key
+            .as_ref()
+            .expect("No verifier registered");
+
+        let mut message = Vec::new();
+        message.extend_from_slice(&task_id.to_le_bytes());
+        message.extend_from_slice(criteria_hash.as_ref());
+        message.extend_from_slice(input_hash.as_ref());
+        message.extend_from_slice(artifact_hash.as_ref());
+        message.push(if passed { 1 } else { 0 });
+
+        assert!(
+            signature.len() == 64,
+            "Signature must be 64 bytes"
+        );
+        let sig: &[u8; 64] = signature.as_slice().try_into().unwrap();
+        let key_bytes = verifier_key.as_bytes();
+        let pk: &[u8; 32] = key_bytes.try_into().unwrap();
+
+        assert!(
+            env::ed25519_verify(sig, &message, pk),
+            "Invalid verifier signature"
+        );
 
         task.nonce_used = true;
         self.used_nonces.insert(&task_id, &true);
@@ -173,7 +261,8 @@ impl Pactara {
             task.state = TaskState::Settled;
             self.reserved -= task.amount;
             self.total -= task.amount;
-            let _ = Promise::new(task.worker.clone()).transfer(NearToken::from_yoctonear(task.amount));
+            let _ = Promise::new(task.worker.clone())
+                .transfer(NearToken::from_yoctonear(task.amount));
             log!("SETTLED task {} | paid {}", task_id, task.worker);
         } else {
             task.state = TaskState::Refunded;
@@ -190,7 +279,10 @@ impl Pactara {
             matches!(task.state, TaskState::Funded | TaskState::Submitted),
             "Cannot expire"
         );
-        assert!(env::block_timestamp() >= task.verification_deadline, "Not expired");
+        assert!(
+            env::block_timestamp() >= task.verification_deadline,
+            "Not expired"
+        );
 
         self.reserved -= task.amount;
         self.available += task.amount;
@@ -209,6 +301,14 @@ impl Pactara {
 
     pub fn is_authorized_buyer(&self, account: AccountId) -> bool {
         self.authorized_buyers.get(&account).unwrap_or(false)
+    }
+
+    pub fn is_authorized_worker(&self, account: AccountId) -> bool {
+        self.authorized_workers.get(&account).unwrap_or(false)
+    }
+
+    pub fn get_daily_status(&self) -> (U128, U128, u64) {
+        (U128(self.daily_limit), U128(self.daily_spent), self.current_day)
     }
 
     pub fn get_task_state(&self, task_id: u64) -> Option<String> {
