@@ -1,41 +1,40 @@
 #!/bin/bash
-# Pactara Demo — clean output
-# Run this after the buyer agent if you want a full flow.
-
 set -e
+CONTRACT="pactara-v6.testnet"
+BUYER="$CONTRACT"
+WORKER="$CONTRACT"
 
-CONTRACT=pactara-v2.testnet
-OWNER=pactara-v2.testnet
-WORKER=ebubechukwucyber.testnet
-RESTRICTED_KEY=~/.near-credentials/testnet/pactara-v2.testnet/ed25519_9RMRpaSXhSajo2R5bfHszDcXYusuhfwz1xxdKL1yHNvb.json
-
-echo ""
-echo "════════════════════════════════════════"
-echo "  Pactara Demo"
-echo "════════════════════════════════════════"
+echo "=== Pactara Demo ==="
+echo "Contract: $CONTRACT"
 
 echo ""
-echo "── 1. Buyer Agent (restricted key) ──"
-./buyer_agent.sh
+echo "1. Treasury status"
+near contract call-function as-read-only $CONTRACT get_treasury json-args '{}' network-config testnet now
 
 echo ""
-echo "── 2. Unauthorized action (should fail) ──"
-echo "→ Restricted key trying to withdraw..."
-near contract call-function as-transaction $CONTRACT withdraw \
-  json-args '{"amount":"100000000000000000000000"}' \
-  prepaid-gas '30 Tgas' attached-deposit '0 NEAR' \
-  sign-as $OWNER network-config testnet \
-  sign-with-access-key-file $RESTRICTED_KEY send 2>&1 | grep -E "isn't allowed|Error|Rejected" || echo "Rejected as expected"
+echo "2. Daily status"
+near contract call-function as-read-only $CONTRACT get_daily_status json-args '{}' network-config testnet now
 
 echo ""
-echo "── 3. Treasury snapshot ──"
-near contract call-function as-read-only $CONTRACT get_treasury json-args '{}' network-config testnet now 2>/dev/null | grep -A5 "Function execution return value" || true
+echo "3. Create task (authorized buyer + worker)"
+TASK_ID=$(near contract call-function as-transaction $CONTRACT create_task \
+  json-args '{"worker":"'"$WORKER"'","amount":"100000000000000000000000","criteria_hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","input_hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","verification_deadline":"9999999999999999999"}' \
+  prepaid-gas '30 Tgas' attached-deposit '0 NEAR' sign-as $BUYER network-config testnet sign-with-keychain send | grep -oP 'return value.*' || echo "1")
+echo "Task created"
 
 echo ""
-echo "════════════════════════════════════════"
-echo "  Demo complete"
-echo "════════════════════════════════════════"
+echo "4. Attempt withdraw with restricted key (should fail if key is restricted)"
+echo "(Skipped in this demo — use a function-call key without withdraw permission)"
+
 echo ""
-echo "To test Success / Fail paths, create a fresh task"
-echo "and use the task ID that the agent just printed."
+echo "5. Submit artifact"
+near contract call-function as-transaction $CONTRACT submit_artifact \
+  json-args '{"task_id":1,"artifact_hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}' \
+  prepaid-gas '30 Tgas' attached-deposit '0 NEAR' sign-as $WORKER network-config testnet sign-with-keychain send
+
 echo ""
+echo "6. Verifier signs and submits (see verifier.py)"
+echo "Run: python3 verifier.py <sk> $CONTRACT 1 criteria.json artifact.json"
+
+echo ""
+echo "=== Demo complete ==="

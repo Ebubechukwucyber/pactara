@@ -3,6 +3,8 @@ use near_sdk::collections::LookupMap;
 use near_sdk::json_types::U128;
 use near_sdk::{env, log, near, AccountId, CryptoHash, NearToken, PanicOnDefault, Promise, PublicKey};
 
+const PROTOCOL_ID: &[u8] = b"PACTARA-v1";
+
 #[derive(BorshDeserialize, BorshSerialize, PartialEq, Clone, Debug)]
 pub enum TaskState {
     Funded,
@@ -43,6 +45,7 @@ pub struct Pactara {
     daily_limit: u128,
     daily_spent: u128,
     current_day: u64,
+    pending_payouts: LookupMap<u64, (AccountId, u128)>,
 }
 
 #[near]
@@ -64,6 +67,7 @@ impl Pactara {
             daily_limit: daily_limit.0,
             daily_spent: 0,
             current_day: env::block_timestamp() / 86_400_000_000_000,
+            pending_payouts: LookupMap::new(b"p"),
         };
         contract.authorized_buyers.insert(&owner, &true);
         contract
@@ -75,6 +79,25 @@ impl Pactara {
             self.current_day = day;
             self.daily_spent = 0;
         }
+    }
+
+    fn build_message(
+        &self,
+        task_id: u64,
+        criteria_hash: &CryptoHash,
+        input_hash: &CryptoHash,
+        artifact_hash: &CryptoHash,
+        passed: bool,
+    ) -> Vec<u8> {
+        let mut message = Vec::new();
+        message.extend_from_slice(PROTOCOL_ID);
+        message.extend_from_slice(env::current_account_id().as_bytes());
+        message.extend_from_slice(&task_id.to_le_bytes());
+        message.extend_from_slice(criteria_hash.as_ref());
+        message.extend_from_slice(input_hash.as_ref());
+        message.extend_from_slice(artifact_hash.as_ref());
+        message.push(if passed { 1 } else { 0 });
+        message
     }
 
     #[payable]
@@ -234,17 +257,9 @@ impl Pactara {
             .as_ref()
             .expect("No verifier registered");
 
-        let mut message = Vec::new();
-        message.extend_from_slice(&task_id.to_le_bytes());
-        message.extend_from_slice(criteria_hash.as_ref());
-        message.extend_from_slice(input_hash.as_ref());
-        message.extend_from_slice(artifact_hash.as_ref());
-        message.push(if passed { 1 } else { 0 });
+        let message = self.build_message(task_id, &criteria_hash, &input_hash, &artifact_hash, passed);
 
-        assert!(
-            signature.len() == 64,
-            "Signature must be 64 bytes"
-        );
+        assert!(signature.len() == 64, "Signature must be 64 bytes");
         let sig: &[u8; 64] = signature.as_slice().try_into().unwrap();
         let key_bytes = verifier_key.as_bytes();
         let pk: &[u8; 32] = key_bytes.try_into().unwrap();
@@ -261,9 +276,14 @@ impl Pactara {
             task.state = TaskState::Settled;
             self.reserved -= task.amount;
             self.total -= task.amount;
-            let _ = Promise::new(task.worker.clone())
-                .transfer(NearToken::from_yoctonear(task.amount));
-            log!("SETTLED task {} | paid {}", task_id, task.worker);
+            self.pending_payouts.insert(&task_id, &(task.worker.clone(), task.amount));
+            Promise::new(task.worker.clone())
+                .transfer(NearToken::from_yoctonear(task.amount))
+                .then(
+                    Self::ext(env::current_account_id())
+                        .on_payout_complete(task_id, true),
+                );
+            log!("SETTLING task {} | paying {}", task_id, task.worker);
         } else {
             task.state = TaskState::Refunded;
             self.reserved -= task.amount;
@@ -271,6 +291,25 @@ impl Pactara {
             log!("REFUNDED task {}", task_id);
         }
         self.tasks.insert(&task_id, &task);
+    }
+
+    #[private]
+    pub fn on_payout_complete(&mut self, task_id: u64, success: bool) {
+        if !success {
+            if let Some((worker, amount)) = self.pending_payouts.remove(&task_id) {
+                self.total += amount;
+                self.available += amount;
+                if let Some(mut task) = self.tasks.get(&task_id) {
+                    if task.state == TaskState::Settled {
+                        task.state = TaskState::Refunded;
+                        self.tasks.insert(&task_id, &task);
+                    }
+                }
+                log!("Payout failed for task {}, refunded", task_id);
+            }
+        } else {
+            self.pending_payouts.remove(&task_id);
+        }
     }
 
     pub fn expire_task(&mut self, task_id: u64) {
@@ -314,4 +353,18 @@ impl Pactara {
     pub fn get_task_state(&self, task_id: u64) -> Option<String> {
         self.tasks.get(&task_id).map(|t| format!("{:?}", t.state))
     }
+
+    pub fn get_signing_message(
+        &self,
+        task_id: u64,
+        criteria_hash: CryptoHash,
+        input_hash: CryptoHash,
+        artifact_hash: CryptoHash,
+        passed: bool,
+    ) -> Vec<u8> {
+        self.build_message(task_id, &criteria_hash, &input_hash, &artifact_hash, passed)
+    }
 }
+
+#[cfg(test)]
+mod tests;

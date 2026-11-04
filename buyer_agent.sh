@@ -4,9 +4,9 @@
 
 set -e
 
-CONTRACT=pactara-v2.testnet
-RESTRICTED_KEY=~/.near-credentials/testnet/pactara-v2.testnet/ed25519_9RMRpaSXhSajo2R5bfHszDcXYusuhfwz1xxdKL1yHNvb.json
-WORKER=ebubechukwucyber.testnet
+CONTRACT=pactara-v6.testnet
+RESTRICTED_KEY=~/.near-credentials/testnet/pactara-v6.testnet/ed25519_PLACEHOLDER.json
+WORKER=pactara-v6.testnet
 
 echo ""
 echo "────────────────────────────────────────"
