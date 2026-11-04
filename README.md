@@ -2,19 +2,16 @@
 
 Agents can hire and pay other agents without being trusted with the money.
 
-Pactara is a NEAR contract that holds a prefunded treasury, reserves funds when an agent creates a task, and releases payment only to the original worker after verification. The hiring agent uses a restricted function-call key and cannot withdraw, change the recipient, or override the rules.
-
-![Pactara flow](flow.png)
-
-This is infrastructure for the Agent Economy: a way for agents to transact safely under on-chain policy.
+Pactara is a NEAR contract that holds a prefunded treasury, reserves funds when an authorized buyer creates a task, and releases payment only to the original worker after verification. The hiring agent uses a restricted function-call key. The contract also enforces an on-chain buyer allowlist so arbitrary accounts cannot spend from the treasury.
 
 ## How it works
 
 ```
-Buyer Agent (restricted key)
+Authorized Buyer (restricted key)
         │
         ▼
    create_task
+   (allowlist check)
         │
         ▼
 ┌─────────────────────┐
@@ -28,7 +25,7 @@ Buyer Agent (restricted key)
    Worker submits artifact
         │
         ▼
-   Verification
+   Verification (owner-gated MVP)
    ┌────┴────┐
    PASS     FAIL
    │         │
@@ -36,57 +33,44 @@ Buyer Agent (restricted key)
  Pay worker  Refund
 ```
 
-## Guarantees
+## Guarantees (current)
 
 - Prefunded treasury with available / reserved accounting
+- On-chain buyer allowlist (only authorized buyers can create tasks)
 - Worker and amount fixed at task creation
 - PASS settles to the original worker
-- FAIL or expiry refunds to available balance
+- FAIL or expiry refunds
 - Restricted key cannot call owner methods
 - One submission per task
+
+## Not yet implemented
+
+- Independent signed verifier (verification is owner-gated)
+- Criteria and input hash enforcement during verification
+- Daily spending limits
+- Worker allowlist
+
+These are documented as next steps. The settlement rules and buyer authorization are enforced today.
 
 ## Deployed
 
 - Contract: `pactara-v2.testnet`
 - Owner: `pactara-v2.testnet`
-- Example worker: `ebubechukwucyber.testnet`
 
 ## Try it
 
-### 1. Buyer agent hires with restricted key
-
 ```bash
-chmod +x buyer_agent.sh
+chmod +x buyer_agent.sh demo.sh
 ./buyer_agent.sh
-```
-
-Expected: a new task is created and funds are reserved. The agent cannot withdraw.
-
-### 2. Unauthorized action is rejected
-
-```bash
 ./demo.sh
 ```
 
-Expected: the restricted key is rejected when it tries to call `withdraw`.
-
-### 3. Check treasury and task state
-
-```bash
-near contract call-function as-read-only pactara-v2.testnet get_treasury json-args '{}' network-config testnet now
-near contract call-function as-read-only pactara-v2.testnet get_task_state json-args '{"task_id":10}' network-config testnet now
-```
+Expected: an authorized buyer creates a task; the restricted key is rejected when it tries to withdraw.
 
 ## Tracks
 
 - Primary: Agent Economy
 - Secondary: AI Security & Defense
-
-## Notes
-
-- All testing is on testnet
-- Verification is owner-gated for the MVP; a signed independent verifier can be added without changing settlement rules
-- TEE and NEAR Intents are deferred
 
 ## Layout
 
@@ -95,5 +79,6 @@ near contract call-function as-read-only pactara-v2.testnet get_task_state json-
 ├── Cargo.toml
 ├── buyer_agent.sh
 ├── demo.sh
+├── flow.png
 └── README.md
 ```

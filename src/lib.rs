@@ -38,23 +38,28 @@ pub struct Pactara {
     next_task_id: u64,
     verifier_public_key: Option<PublicKey>,
     used_nonces: LookupMap<u64, bool>,
+    authorized_buyers: LookupMap<AccountId, bool>,
 }
 
 #[near]
 impl Pactara {
     #[init]
     pub fn new(owner: AccountId, max_amount_per_task: U128) -> Self {
-        Self {
+        let mut contract = Self {
             total: 0,
             available: 0,
             reserved: 0,
-            owner,
+            owner: owner.clone(),
             max_amount_per_task: max_amount_per_task.0,
             tasks: LookupMap::new(b"t"),
             next_task_id: 1,
             verifier_public_key: None,
             used_nonces: LookupMap::new(b"n"),
-        }
+            authorized_buyers: LookupMap::new(b"b"),
+        };
+        // Owner is authorized by default
+        contract.authorized_buyers.insert(&owner, &true);
+        contract
     }
 
     #[payable]
@@ -77,13 +82,25 @@ impl Pactara {
     pub fn set_policy(&mut self, max_amount_per_task: U128) {
         assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
         self.max_amount_per_task = max_amount_per_task.0;
-        log!("Policy updated: max_amount_per_task = {}", self.max_amount_per_task);
+        log!("Policy updated");
+    }
+
+    pub fn add_authorized_buyer(&mut self, buyer: AccountId) {
+        assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
+        self.authorized_buyers.insert(&buyer, &true);
+        log!("Authorized buyer: {}", buyer);
+    }
+
+    pub fn remove_authorized_buyer(&mut self, buyer: AccountId) {
+        assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
+        self.authorized_buyers.insert(&buyer, &false);
+        log!("Removed buyer: {}", buyer);
     }
 
     pub fn register_verifier(&mut self, public_key: PublicKey) {
         assert_eq!(env::predecessor_account_id(), self.owner, "Only owner");
         self.verifier_public_key = Some(public_key);
-        log!("Verifier public key registered");
+        log!("Verifier registered");
     }
 
     pub fn create_task(
@@ -94,6 +111,12 @@ impl Pactara {
         input_hash: CryptoHash,
         verification_deadline: u64,
     ) -> u64 {
+        let caller = env::predecessor_account_id();
+        assert!(
+            self.authorized_buyers.get(&caller).unwrap_or(false),
+            "Unauthorized buyer"
+        );
+
         let amount = amount.0;
         assert!(amount > 0 && amount <= self.max_amount_per_task, "Invalid amount");
         assert!(amount <= self.available, "Insufficient available");
@@ -107,7 +130,7 @@ impl Pactara {
 
         let task = Task {
             id: task_id,
-            buyer: env::predecessor_account_id(),
+            buyer: caller,
             worker,
             amount,
             criteria_hash,
@@ -118,12 +141,7 @@ impl Pactara {
             nonce_used: false,
         };
         self.tasks.insert(&task_id, &task);
-        log!(
-            "Task {} created | worker: {} | amount: {} | reserved",
-            task_id,
-            task.worker,
-            amount
-        );
+        log!("Task {} created | worker: {} | amount: {}", task_id, task.worker, amount);
         task_id
     }
 
@@ -139,14 +157,7 @@ impl Pactara {
         log!("Artifact submitted for task {}", task_id);
     }
 
-    /// Owner path (MVP). Also accepts a signed payload for future independent verifier.
-    /// For now the owner can settle; signature field is reserved for the signed verifier.
-    pub fn submit_verification(
-        &mut self,
-        task_id: u64,
-        passed: bool,
-        _signature: Option<Vec<u8>>,
-    ) {
+    pub fn submit_verification(&mut self, task_id: u64, passed: bool, _signature: Option<Vec<u8>>) {
         let caller = env::predecessor_account_id();
         assert_eq!(caller, self.owner, "Only owner for now");
 
@@ -163,7 +174,7 @@ impl Pactara {
             self.reserved -= task.amount;
             self.total -= task.amount;
             let _ = Promise::new(task.worker.clone()).transfer(NearToken::from_yoctonear(task.amount));
-            log!("SETTLED task {} | paid worker {}", task_id, task.worker);
+            log!("SETTLED task {} | paid {}", task_id, task.worker);
         } else {
             task.state = TaskState::Refunded;
             self.reserved -= task.amount;
@@ -179,16 +190,13 @@ impl Pactara {
             matches!(task.state, TaskState::Funded | TaskState::Submitted),
             "Cannot expire"
         );
-        assert!(
-            env::block_timestamp() >= task.verification_deadline,
-            "Not expired yet"
-        );
+        assert!(env::block_timestamp() >= task.verification_deadline, "Not expired");
 
         self.reserved -= task.amount;
         self.available += task.amount;
         task.state = TaskState::Expired;
         self.tasks.insert(&task_id, &task);
-        log!("EXPIRED task {} | refunded", task_id);
+        log!("EXPIRED task {}", task_id);
     }
 
     pub fn get_treasury(&self) -> (U128, U128, U128) {
@@ -199,18 +207,11 @@ impl Pactara {
         self.owner.clone()
     }
 
-    pub fn get_task_state(&self, task_id: u64) -> Option<String> {
-        self.tasks.get(&task_id).map(|t| format!("{:?}", t.state))
+    pub fn is_authorized_buyer(&self, account: AccountId) -> bool {
+        self.authorized_buyers.get(&account).unwrap_or(false)
     }
 
-    pub fn get_task_details(&self, task_id: u64) -> Option<(AccountId, AccountId, u128, String)> {
-        self.tasks.get(&task_id).map(|t| {
-            (
-                t.buyer,
-                t.worker,
-                t.amount,
-                format!("{:?}", t.state),
-            )
-        })
+    pub fn get_task_state(&self, task_id: u64) -> Option<String> {
+        self.tasks.get(&task_id).map(|t| format!("{:?}", t.state))
     }
 }
