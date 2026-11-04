@@ -5,7 +5,7 @@
 set -e
 
 CONTRACT=pactara-v6.testnet
-RESTRICTED_KEY=~/.near-credentials/testnet/pactara-v6.testnet/ed25519_PLACEHOLDER.json
+RESTRICTED_KEY=~/.near-credentials/testnet/pactara-v6.testnet/ed25519_FcgWnB8ffKw41KWYHPQoWjkG3pjYvL6b8W51Wq2tjzdh.json
 WORKER=pactara-v6.testnet
 
 echo ""

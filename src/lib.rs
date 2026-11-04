@@ -4,6 +4,7 @@ use near_sdk::json_types::U128;
 use near_sdk::{env, log, near, AccountId, CryptoHash, NearToken, PanicOnDefault, Promise, PublicKey};
 
 const PROTOCOL_ID: &[u8] = b"PACTARA-v1";
+const NETWORK_ID: &[u8] = b"testnet";
 
 #[derive(BorshDeserialize, BorshSerialize, PartialEq, Clone, Debug)]
 pub enum TaskState {
@@ -91,6 +92,7 @@ impl Pactara {
     ) -> Vec<u8> {
         let mut message = Vec::new();
         message.extend_from_slice(PROTOCOL_ID);
+        message.extend_from_slice(NETWORK_ID);
         message.extend_from_slice(env::current_account_id().as_bytes());
         message.extend_from_slice(&task_id.to_le_bytes());
         message.extend_from_slice(criteria_hash.as_ref());
@@ -277,11 +279,11 @@ impl Pactara {
             self.reserved -= task.amount;
             self.total -= task.amount;
             self.pending_payouts.insert(&task_id, &(task.worker.clone(), task.amount));
-            Promise::new(task.worker.clone())
+            let _ = Promise::new(task.worker.clone())
                 .transfer(NearToken::from_yoctonear(task.amount))
                 .then(
                     Self::ext(env::current_account_id())
-                        .on_payout_complete(task_id, true),
+                        .on_payout_complete(task_id),
                 );
             log!("SETTLING task {} | paying {}", task_id, task.worker);
         } else {
@@ -294,9 +296,11 @@ impl Pactara {
     }
 
     #[private]
-    pub fn on_payout_complete(&mut self, task_id: u64, success: bool) {
+    pub fn on_payout_complete(&mut self, task_id: u64) {
+        let success = env::promise_results_count() == 1
+            && matches!(env::promise_result(0), near_sdk::PromiseResult::Successful(_));
         if !success {
-            if let Some((worker, amount)) = self.pending_payouts.remove(&task_id) {
+            if let Some((_worker, amount)) = self.pending_payouts.remove(&task_id) {
                 self.total += amount;
                 self.available += amount;
                 if let Some(mut task) = self.tasks.get(&task_id) {

@@ -76,7 +76,7 @@ Expected: an authorized buyer creates a task for an authorized worker; the restr
 ## Verifier
 
 ```bash
-python3 verifier.py <sk_hex> pactara-v5.testnet <task_id> criteria.json artifact.json
+python3 verifier.py <sk_hex> pactara-v6.testnet <task_id> criteria.json artifact.json <signer>
 ```
 
 ## Tracks
