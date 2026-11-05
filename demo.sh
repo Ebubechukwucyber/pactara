@@ -1,23 +1,23 @@
 #!/bin/bash
 set -e
 CONTRACT="pactara-v6.testnet"
-BUYER="$CONTRACT"
-WORKER="$CONTRACT"
-SIGNER="$CONTRACT"
+ACCOUNT="pactara-v6.testnet"
 
 echo "=== Pactara Demo ==="
 echo "Contract: $CONTRACT"
+echo
 
-echo ""
 echo "1. Treasury status"
-near contract call-function as-read-only $CONTRACT get_treasury json-args '{}' network-config testnet now
+near contract call-function as-read-only "$CONTRACT" get_treasury json-args '{}' network-config testnet now
+echo
 
-echo ""
 echo "2. Daily status"
-near contract call-function as-read-only $CONTRACT get_daily_status json-args '{}' network-config testnet now
+near contract call-function as-read-only "$CONTRACT" get_daily_status json-args '{}' network-config testnet now
+echo
 
 # Create criteria and artifact files
-cat > /tmp/criteria.json << 'EOF'
+mkdir -p /tmp/pactara-demo
+cat > /tmp/pactara-demo/criteria.json << 'CRITERIA'
 {
   "schema": {
     "result": {"type": "string", "required": true, "minLength": 1},
@@ -25,35 +25,52 @@ cat > /tmp/criteria.json << 'EOF'
   },
   "input": {"query": "demo"}
 }
-EOF
+CRITERIA
 
-cat > /tmp/artifact.json << 'EOF'
+cat > /tmp/pactara-demo/artifact.json << 'ARTIFACT'
 {
   "result": "completed",
   "score": 95
 }
-EOF
+ARTIFACT
 
-CRITERIA_HASH=$(python3 -c "import json,hashlib; print(hashlib.sha256(json.dumps(json.load(open('/tmp/criteria.json')),sort_keys=True,separators=(',',':')).encode()).hexdigest())")
-INPUT_HASH=$(python3 -c "import json,hashlib; d=json.load(open('/tmp/criteria.json')); print(hashlib.sha256(json.dumps(d.get('input',{}),sort_keys=True,separators=(',',':')).encode()).hexdigest())")
-ARTIFACT_HASH=$(python3 -c "import json,hashlib; print(hashlib.sha256(json.dumps(json.load(open('/tmp/artifact.json')),sort_keys=True,separators=(',',':')).encode()).hexdigest())")
+# Compute hashes as byte arrays
+CRITERIA_HASH=$(python3 -c "
+import json, hashlib
+c = json.load(open('/tmp/pactara-demo/criteria.json'))
+h = hashlib.sha256(json.dumps(c, sort_keys=True).encode()).hexdigest()
+print(list(bytes.fromhex(h)))
+")
 
-echo ""
+INPUT_HASH=$(python3 -c "
+import json, hashlib
+c = json.load(open('/tmp/pactara-demo/criteria.json'))
+h = hashlib.sha256(json.dumps(c.get('input', {}), sort_keys=True).encode()).hexdigest()
+print(list(bytes.fromhex(h)))
+")
+
 echo "3. Create task"
-near contract call-function as-transaction $CONTRACT create_task \
-  json-args '{"worker":"'"$WORKER"'","amount":"100000000000000000000000","criteria_hash":"'"$CRITERIA_HASH"'","input_hash":"'"$INPUT_HASH"'","verification_deadline":"9999999999999999999"}' \
-  prepaid-gas '50 Tgas' attached-deposit '0 NEAR' sign-as $BUYER network-config testnet sign-with-keychain send
+near contract call-function as-transaction "$CONTRACT" create_task \
+  json-args "{\"worker\":\"$ACCOUNT\",\"amount\":\"100000000000000000000000\",\"criteria_hash\":$CRITERIA_HASH,\"input_hash\":$INPUT_HASH,\"verification_deadline\":2000000000000000000}" \
+  prepaid-gas "50.0 Tgas" attached-deposit "0 NEAR" \
+  sign-as "$ACCOUNT" network-config testnet sign-with-keychain send
 
-echo ""
-echo "4. Submit artifact"
-near contract call-function as-transaction $CONTRACT submit_artifact \
-  json-args '{"task_id":1,"artifact_hash":"'"$ARTIFACT_HASH"'"}' \
-  prepaid-gas '30 Tgas' attached-deposit '0 NEAR' sign-as $WORKER network-config testnet sign-with-keychain send
+echo
+echo "4. Submit artifact (as worker)"
+ARTIFACT_HASH=$(python3 -c "
+import json, hashlib
+a = json.load(open('/tmp/pactara-demo/artifact.json'))
+h = hashlib.sha256(json.dumps(a, sort_keys=True).encode()).hexdigest()
+print(list(bytes.fromhex(h)))
+")
 
-echo ""
-echo "5. Verifier signs and submits"
-echo "Note: Run verifier.py with the verifier private key to complete settlement"
-echo "python3 verifier.py <sk_hex> $CONTRACT 1 /tmp/criteria.json /tmp/artifact.json $SIGNER"
+near contract call-function as-transaction "$CONTRACT" submit_artifact \
+  json-args "{\"task_id\":1,\"artifact_hash\":$ARTIFACT_HASH}" \
+  prepaid-gas "30.0 Tgas" attached-deposit "0 NEAR" \
+  sign-as "$ACCOUNT" network-config testnet sign-with-keychain send
 
-echo ""
-echo "=== Demo complete ==="
+echo
+echo "5. Run verifier"
+echo "python3 verifier.py <PRIVATE_KEY> $CONTRACT 1 /tmp/pactara-demo/criteria.json /tmp/pactara-demo/artifact.json $ACCOUNT"
+echo
+echo "Done. Run the verifier command above with your private key."
