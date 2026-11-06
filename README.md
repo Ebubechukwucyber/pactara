@@ -1,83 +1,172 @@
 # Pactara
 
-**Verifiable Task Bonds for AI Agents on NEAR**
+**Independent, authorized verification with cryptographically enforced settlement on NEAR.**
 
-Pactara lets AI agents and humans lock funds, define work, and get paid only when an authorized verifier cryptographically proves the work was done correctly. No trusted intermediary. No human arbitration.
+Pactara is a NEAR contract that lets a buyer reserve funds for a task, a worker submit an artifact, and an authorized verifier sign a structured result. The contract checks that signature on-chain and then either pays the worker or returns the reserved funds.
 
-## Problem
+This is not a claim of trustless work evaluation. The contract enforces settlement rules around a registered verifier key. It does not decide whether the work is objectively correct.
 
-AI agents are starting to hire other agents and humans to complete tasks. Today there is no clean way to:
-- Escrow payment
-- Define acceptance criteria on-chain
-- Automatically release funds when work is proven
-- Recover funds when work fails or times out
+## What the contract guarantees
 
-Existing escrow contracts still require a human admin or simple timeout. Pactara removes that trust.
+- Deposited funds are tracked as `total`, `available`, and `reserved`.
+- Creating a task moves the payout amount from `available` to `reserved` and enforces per-task and daily spending limits. FAIL verification, failed payout, and expiry restore `daily_spent` if they happen on the same UTC day the task was created.
+- Only the owner or an authorized buyer may `deposit`. Withdrawals always pay the owner.
+- `total >= available + reserved` always. Outbound transfers also keep `total == available + reserved + pending_out`.
+- Settlement requires a valid ed25519 signature from the registered verifier over a domain-separated message:
+  `pactara-v1 || network_id || contract_account || task_id_le || criteria_hash || input_hash || artifact_hash || pass_flag`
+  `network_id` is stored at init (`new` uses `testnet`; `new_with_network` for other networks).
+- Criteria, input, and artifact hashes in that message must match the hashes stored on the task.
+- A PASS signature moves the task `Funded → Submitted → PayoutPending`. Only a successful payout callback marks it `Settled` and reduces `total`.
+- A FAIL signature, a failed payout, or an expired task returns the reserved amount to `available`. Failed verification and failed payout become `Refunded`. Timeout becomes `Expired`.
+- Withdrawals deduct from `available` only after tracking a pending withdrawal. A failed transfer restores the amount.
+- Replay is blocked by task state plus a one-time nonce. Callbacks may be executed only by the contract account (`#[private]` plus an explicit predecessor check).
+- Anyone can submit a verification signature or expire a timed-out task. Only an authorized buyer can create a task. Only the named worker can submit the artifact.
 
-## Solution
+## What the verifier is trusted to do
 
-A single NEAR contract that combines:
-- Policy-enforced treasury (available vs reserved balances)
-- Task state machine (Funded → Submitted → Settled / Expired / Rejected)
-- On-chain ed25519 verification of a structured work proof
-- Automatic payout or refund
+The verifier is trusted to evaluate the artifact against the agreed criteria and to sign `passed=true` or `passed=false` honestly.
 
-The verifier can be an AI system, a human, or a threshold of both. The contract only cares about the signature.
+A signature proves that the registered key signed that result. It does not prove that the evaluation was correct, complete, or free of bias. A compromised or malicious verifier can still authorize an incorrect payout or refund.
 
-## Live Demo (Testnet)
+## What happens when verification passes or fails
 
-| | |
-|--|--|
-| Contract | `pactara-v9.testnet` |
-| Settled task | [62TnWPZ8bv2o2cXUR4cbwGKyLGSxCkfkogTJZDF6sGw8](https://explorer.testnet.near.org/transactions/62TnWPZ8bv2o2cXUR4cbwGKyLGSxCkfkogTJZDF6sGw8) |
-| Result | Task settled, worker paid, reserved balance released |
-
-Full flow executed on-chain:  
-deposit → create_task → submit_artifact → register_verifier → submit_verification → automatic payout
-
-## How It Works
-
-1. Buyer deposits NEAR into the contract.
-2. Owner creates a task with worker, amount, criteria hash, input hash, and deadline. Funds are reserved.
+1. Buyer deposits NEAR.
+2. Authorized buyer creates a task with worker, amount, criteria hash, **input hash of the actual task input**, and an absolute `verification_deadline` (block timestamp nanoseconds). Funds are reserved.
 3. Worker submits the artifact hash.
-4. Verifier (AI or human) signs the exact message: `pactara-v1 || network || contract || task data`.
-5. Anyone submits the signature. Contract verifies it and either pays the worker or rejects.
-6. After deadline, anyone can call `expire_task` to return reserved funds.
+4. The verifier loads criteria, input, and artifact, queries the on-chain task, checks hashes and its own public key, then signs the contract’s canonical message.
+5. PASS: task becomes `PayoutPending`, reserved funds are marked in-flight, and a transfer is started. The payout callback sets `Settled` on success or `Refunded` on failure (restoring `available`).
+6. FAIL: reserved funds return to `available`, task becomes `Refunded`.
+7. After the deadline, anyone can call `expire_task` for `Funded` or `Submitted` tasks.
 
-## Why This Fits the NEAR Hackathon
+## Canonical hashes
 
-- Uses NEAR’s native account model and Promise-based payments
-- Demonstrates real economic activity (escrow + conditional transfer)
-- Designed for the emerging agent-to-agent economy
-- Fully working on testnet with verifiable transactions
-- Minimal but complete: treasury accounting + cryptographic settlement
+Buyer, worker, and verifier must hash JSON the same way:
 
-## Contract Interface
-
-- `deposit` / `withdraw` — treasury management
-- `create_task` — reserve funds and open task
-- `submit_artifact` — worker delivers hash
-- `register_verifier` — set ed25519 public key
-- `submit_verification` — submit signed proof → settle or reject
-- `expire_task` — reclaim after deadline
-- Views: `get_treasury`, `get_task_state`, `get_signing_message`
-
-## Run the Demo
-
-```bash
-git clone https://github.com/Ebubechukwucyber/pactara.git
-cd pactara
-./demo.sh
+```text
+json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+SHA-256 of those UTF-8 bytes
 ```
 
-Requires `near-cli-rs` and the verifier signature file at `/tmp/verify.json`.
+- `criteria_hash` is the hash of the criteria document (schema).
+- `input_hash` is the hash of the task input document, not of an `input` field nested inside the criteria.
+- `artifact_hash` is the hash of the submitted artifact document.
 
-## Security Properties
+## Live on testnet
 
-- Domain-separated message prevents cross-contract replay
-- Nonce prevents double-spend of a verification
-- Reserved balance accounting prevents over-commitment
-- Only the registered verifier key can authorize payout
-- Failed payouts automatically refund the treasury
+| Item | Value |
+|------|-------|
+| Contract account | `pactara-v9.testnet` |
+| Worker used by the demo | `pactara-v6.testnet` |
+| Example settled task | [62TnWPZ8bv2o2cXUR4cbwGKyLGSxCkfkogTJZDF6sGw8](https://explorer.testnet.near.org/transactions/62TnWPZ8bv2o2cXUR4cbwGKyLGSxCkfkogTJZDF6sGw8) |
+
+The account `pactara-v9.testnet` is the currently documented deployment. After this settlement-callback change, redeploy the wasm from this repository before expecting `PayoutPending` on that account. Set `PACTARA_CONTRACT` if you deploy to a new account.
+
+## Implemented vs planned
+
+Implemented:
+
+- Policy-limited treasury (available / reserved / pending outbound)
+- Worker and buyer allowlists
+- Hash-bound tasks and domain-separated ed25519 verification
+- Payout and withdrawal callbacks with balance recovery
+- Off-chain verifier that queries the task before signing
+- End-to-end testnet demo scripts
+
+Not implemented (do not assume they exist):
+
+- TEE-backed or hardware-attested verification
+- Multi-verifier or threshold consensus
+- Objective verification of arbitrary work
+- Dispute windows, human arbitration, or task retry after refund
+- In-place network switching after init
+- A marketplace, dashboard, or additional tokens
+
+## Limitations
+
+These are remaining properties of the current design, not planned features.
+
+### Trust
+
+- One registered ed25519 key decides PASS or FAIL. The contract does not evaluate work, run a TEE, or require a verifier quorum.
+- A signature proves only that the registered key signed that task, those hashes, and that boolean. It does not prove the work is correct.
+- The owner can replace the verifier key, change spending policy, and add or remove buyers and workers. There is no on-chain timelock or governance.
+- Criteria, input, and artifact JSON never appear on-chain. Only 32-byte hashes do. Parties must exchange the real documents off-chain. If the verifier is shown different bytes than the buyer hashed, the on-chain hash check fails; if the verifier is malicious, it can still sign PASS or FAIL for the stored hashes without looking at the documents.
+- `submit_verification` is permissionless. Anyone who obtains a valid signature can submit it. That is intentional, but it means the verifier’s signed result is a bearer credential until the task nonce is consumed.
+- The Python verifier trusts the configured NEAR RPC when it calls `get_task` and `get_signing_message`.
+
+### Accounting and funds
+
+- Reserved funds cannot be withdrawn. Owner `withdraw` only spends `available`.
+- A failed payout marks the task `Refunded` and does not reopen it. The worker cannot resubmit on that task id.
+- `expire_task` works only in `Funded` or `Submitted`. A task in `PayoutPending` cannot be expired, and the transfer is never retried (that would risk a double pay). Callbacks use 50 Tgas and avoid panicking after the predecessor check so accounting can finish.
+- Withdrawals always pay the owner, not the original depositor.
+- Treasury maps are not iterable. The contract cannot list all tasks, pending payouts, or pending withdrawals.
+
+### Cryptography and environment
+
+- Protocol id is `pactara-v1`. Together with `network_id` and the contract account it domain-separates signatures; it is not a chain-id from the host.
+- Only ed25519 verifier keys are accepted. secp256k1 is rejected.
+- Hashing is SHA-256 over a specific canonical JSON encoding. A different serializer produces a different task and will not verify.
+
+### Operations
+
+- This state layout (extra enum variant, `pending_withdrawals`, `pending_out`) is not a safe in-place upgrade of an already-initialized contract. Migrating `pactara-v9.testnet` requires a fresh account or an intentional wipe and re-init.
+- The documented testnet account may still be running older bytecode until the wasm from this repo is deployed.
+- Unit tests mock receipts; they do not prove live NEAR transfers.
+- Restricted buyer access keys (see `buyer_agent.sh`) are a NEAR account-key convention, not a contract-enforced role beyond the buyer allowlist.
+
+## Build and test
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo test
+cargo build --target wasm32-unknown-unknown --release
+python3 verifier.py self-test
+```
+
+Deploy (replace the account if you are not using v9):
+
+```bash
+near contract deploy pactara-v9.testnet \
+  use-file target/wasm32-unknown-unknown/release/pactara_contract.wasm \
+  without-init-call \
+  network-config testnet \
+  sign-with-keychain \
+  send
+```
+
+A state-layout change (new enum variant and withdrawal fields) is not a safe in-place upgrade of an already-initialized contract. Use a fresh account or re-initialize only if you intend to wipe existing tasks.
+
+## Demos
+
+Requires `near-cli-rs`, testnet keys in the keychain, and `pip install pynacl base58`.
+
+Successful payment:
+
+```bash
+chmod +x demo.sh
+./demo.sh pass
+```
+
+Failed verification / refund:
+
+```bash
+./demo.sh fail
+```
+
+The demo generates an ephemeral verifier key, registers it, hashes real criteria/input/artifact files, uses the task id returned by the contract, submits the worker artifact, and asks `verifier.py` to query, sign, and submit. It does not hardcode task ids or placeholder hashes.
+
+## Contract methods
+
+| Method | Description |
+|--------|-------------|
+| `deposit` / `withdraw` | Treasury in/out. Withdrawals use `on_withdraw` recovery |
+| `create_task` | Reserve funds and open a task |
+| `submit_artifact` | Worker posts artifact hash |
+| `register_verifier` | Set the ed25519 public key |
+| `submit_verification` | Signed result → `PayoutPending` or `Refunded` |
+| `on_payout` / `on_withdraw` | Private callbacks |
+| `expire_task` | Restore reserved funds after the deadline |
+| Views | `get_treasury`, `get_pending_out`, `get_task`, `get_task_state`, `get_signing_message`, `get_verifier_public_key`, `get_network_id`, `get_protocol_id` |
 
 Built for the NEAR Hackathon 2026.
