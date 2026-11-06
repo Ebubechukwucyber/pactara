@@ -20,6 +20,7 @@ use near_sdk::{
 };
 
 const PROTOCOL_ID: &[u8] = b"pactara-v1";
+const CODE_VERSION: &str = "pactara-2.0.0";
 const DEFAULT_NETWORK_ID: &str = "testnet";
 const CALLBACK_GAS: Gas = Gas::from_tgas(50);
 
@@ -150,7 +151,27 @@ impl Pactara {
     fn restore_daily_spend(&mut self, task: &Task) {
         self.update_day();
         if self.current_day == task.created_day {
-            self.daily_spent = self.daily_spent.saturating_sub(task.amount);
+            match self.daily_spent.checked_sub(task.amount) {
+                Some(remaining) => self.daily_spent = remaining,
+                None => {
+                    log!("daily_spent underflow; clamping to 0");
+                    self.daily_spent = 0;
+                }
+            }
+        }
+    }
+
+    fn take_pending_out(&mut self, amount: u128) {
+        match self.pending_out.checked_sub(amount) {
+            Some(remaining) => self.pending_out = remaining,
+            None => {
+                log!(
+                    "pending_out underflow (had {}, removing {}); clamping to 0",
+                    self.pending_out,
+                    amount
+                );
+                self.pending_out = 0;
+            }
         }
     }
 
@@ -287,9 +308,15 @@ impl Pactara {
         let success = Self::previous_transfer_succeeded();
 
         if let Some(amount) = self.pending_withdrawals.remove(&withdrawal_id) {
-            self.pending_out = self.pending_out.saturating_sub(amount);
+            self.take_pending_out(amount);
             if success {
-                self.total = self.total.saturating_sub(amount);
+                match self.total.checked_sub(amount) {
+                    Some(remaining) => self.total = remaining,
+                    None => {
+                        log!("total underflow on withdraw success; clamping to 0");
+                        self.total = 0;
+                    }
+                }
                 log!("Withdrawal {} succeeded", withdrawal_id);
             } else {
                 self.available += amount;
@@ -487,11 +514,17 @@ impl Pactara {
         let success = Self::previous_transfer_succeeded();
 
         if let Some((_worker, amount)) = self.pending_payouts.remove(&task_id) {
-            self.pending_out = self.pending_out.saturating_sub(amount);
+            self.take_pending_out(amount);
             if let Some(mut task) = self.tasks.get(&task_id).cloned() {
                 if task.state == TaskState::PayoutPending {
                     if success {
-                        self.total = self.total.saturating_sub(amount);
+                        match self.total.checked_sub(amount) {
+                            Some(remaining) => self.total = remaining,
+                            None => {
+                                log!("total underflow on payout success; clamping to 0");
+                                self.total = 0;
+                            }
+                        }
                         task.state = TaskState::Settled;
                         log!("Payout succeeded for task {}", task_id);
                     } else {
@@ -502,12 +535,18 @@ impl Pactara {
                     }
                     self.tasks.insert(task_id, task);
                 } else if success {
-                    self.total = self.total.saturating_sub(amount);
+                    match self.total.checked_sub(amount) {
+                        Some(remaining) => self.total = remaining,
+                        None => self.total = 0,
+                    }
                 } else {
                     self.available += amount;
                 }
             } else if success {
-                self.total = self.total.saturating_sub(amount);
+                match self.total.checked_sub(amount) {
+                    Some(remaining) => self.total = remaining,
+                    None => self.total = 0,
+                }
             } else {
                 self.available += amount;
             }
@@ -553,6 +592,10 @@ impl Pactara {
         String::from_utf8_lossy(PROTOCOL_ID).into_owned()
     }
 
+    pub fn get_code_version(&self) -> String {
+        CODE_VERSION.to_string()
+    }
+
     pub fn get_verifier_public_key(&self) -> Option<PublicKey> {
         self.verifier_public_key.clone()
     }
@@ -567,6 +610,15 @@ impl Pactara {
 
     pub fn get_daily_status(&self) -> (U128, U128, u64) {
         (U128(self.daily_limit), U128(self.daily_spent), self.current_day)
+    }
+
+    pub fn get_policy(&self) -> (U128, U128, U128, u64) {
+        (
+            U128(self.max_amount_per_task),
+            U128(self.daily_limit),
+            U128(self.daily_spent),
+            self.current_day,
+        )
     }
 
     pub fn get_task_state(&self, task_id: u64) -> Option<String> {

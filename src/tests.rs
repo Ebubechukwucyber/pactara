@@ -490,6 +490,7 @@ fn network_id_is_testnet_and_binds_signatures() {
     let contract = setup();
     assert_eq!(contract.get_network_id(), "testnet");
     assert_eq!(contract.get_protocol_id(), "pactara-v1");
+    assert_eq!(contract.get_code_version(), "pactara-2.0.0");
     testing_env!(context_deposit(owner(), ONE_NEAR, 1));
     let other = Pactara::new_with_network(
         owner(),
@@ -501,4 +502,77 @@ fn network_id_is_testnet_and_binds_signatures() {
     let a = contract.get_signing_message(1, hash_n(1), hash_n(2), hash_n(3), true);
     let b = other.get_signing_message(1, hash_n(1), hash_n(2), hash_n(3), true);
     assert_ne!(a, b);
+}
+
+#[test]
+#[should_panic(expected = "Bad deadline")]
+fn invalid_deadline_rejected() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 100));
+    contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), 50);
+}
+
+#[test]
+#[should_panic(expected = "Insufficient available")]
+fn insufficient_treasury_rejected() {
+    testing_env!(context_deposit(owner(), 50, 1));
+    let mut contract = Pactara::new(owner(), U128(ONE_NEAR), U128(5 * ONE_NEAR));
+    contract.deposit();
+    contract.add_authorized_buyer(buyer());
+    contract.add_authorized_worker(worker());
+    testing_env!(context(buyer(), 1));
+    contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), u64::MAX);
+}
+
+#[test]
+#[should_panic(expected = "Task not found")]
+fn unknown_task_verification_rejected() {
+    let mut contract = setup();
+    testing_env!(context(submitter(), 1));
+    contract.submit_verification(99, true, hash_n(1), hash_n(2), hash_n(3), vec![0u8; 64]);
+}
+
+#[test]
+#[should_panic(expected = "Only worker")]
+fn only_named_worker_can_submit_artifact() {
+    let mut contract = setup();
+    let task_id = create_funded_task(&mut contract, 100, u64::MAX);
+    testing_env!(context(outsider(), 1));
+    contract.submit_artifact(task_id, hash_n(3));
+}
+
+#[test]
+#[should_panic(expected = "Only owner")]
+fn buyer_cannot_set_policy() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 1));
+    contract.set_policy(U128(1), U128(1));
+}
+
+#[test]
+#[should_panic(expected = "Only owner")]
+fn buyer_cannot_withdraw() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 1));
+    contract.withdraw(U128(1));
+}
+
+#[test]
+#[should_panic(expected = "Not expired")]
+fn expire_before_deadline_rejected() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 1));
+    let task_id = contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), 5_000);
+    testing_env!(context(submitter(), 50));
+    contract.expire_task(task_id);
+}
+
+#[test]
+fn get_policy_exposes_limits_for_preflight() {
+    let contract = setup();
+    let (max_task, daily_limit, daily_spent, _day) = contract.get_policy();
+    assert_eq!(max_task.0, ONE_NEAR);
+    assert_eq!(daily_limit.0, 5 * ONE_NEAR);
+    assert_eq!(daily_spent.0, 0);
+    assert_invariants(&contract);
 }

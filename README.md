@@ -11,7 +11,7 @@ This is not a claim of trustless work evaluation. The contract enforces settleme
 - Deposited funds are tracked as `total`, `available`, and `reserved`.
 - Creating a task moves the payout amount from `available` to `reserved` and enforces per-task and daily spending limits. FAIL verification, failed payout, and expiry restore `daily_spent` if they happen on the same UTC day the task was created.
 - Only the owner or an authorized buyer may `deposit`. Withdrawals always pay the owner.
-- `total >= available + reserved` always. Outbound transfers also keep `total == available + reserved + pending_out`.
+- Accounting identity: `total == available + reserved + pending_out` (so `total >= available + reserved`). Callbacks log and clamp rather than panic if an underflow is observed, so a completed transfer receipt can still be recorded.
 - Settlement requires a valid ed25519 signature from the registered verifier over a domain-separated message:
   `pactara-v1 || network_id || contract_account || task_id_le || criteria_hash || input_hash || artifact_hash || pass_flag`
   `network_id` is stored at init (`new` uses `testnet`; `new_with_network` for other networks).
@@ -37,6 +37,42 @@ A signature proves that the registered key signed that result. It does not prove
 5. PASS: task becomes `PayoutPending`, reserved funds are marked in-flight, and a transfer is started. The payout callback sets `Settled` on success or `Refunded` on failure (restoring `available`).
 6. FAIL: reserved funds return to `available`, task becomes `Refunded`.
 7. After the deadline, anyone can call `expire_task` for `Funded` or `Submitted` tasks.
+
+## Buyer access keys
+
+The buyer agent (`buyer_agent.sh`) must sign as the account that owns the restricted key.
+
+```bash
+export PACTARA_CONTRACT=pactara-v9.testnet
+export PACTARA_BUYER=<buyer-account.testnet>
+export PACTARA_WORKER=pactara-v6.testnet
+export PACTARA_RESTRICTED_KEY=/path/to/buyer-function-call-key.json
+./buyer_agent.sh
+```
+
+The script reads `account_id` and `public_key` from the key file (never prints the private key), checks that `PACTARA_BUYER` matches, and checks that the public key is installed on that account. It refuses FullAccess keys.
+
+Inspect permissions:
+
+```bash
+near account list-keys "$PACTARA_BUYER" network-config testnet now
+```
+
+The buyer key should be a function-call key limited to `create_task` on the contract. It must not allow `withdraw`, `set_policy`, `register_verifier`, or allowlist changes. The contract still enforces owner-only on those methods even if a key is mis-issued.
+
+## Supported JSON validation (not JSON Schema)
+
+`verifier.py` is a small evaluator, not a JSON Schema implementation.
+
+Allowed criteria shape:
+
+```json
+{"schema":{"field":{"type":"string|integer|number|boolean|object","required":true}}}
+```
+
+Allowed rule keywords: `type`, `required`, `minLength`, `maxLength`, `min`, `max`, `properties`, `required_keys`. Any other keyword (`pattern`, `$ref`, `enum`, `items`, …) or type (`array`, …) is rejected **before signing**. A schema error is not a FAIL signature.
+
+Python `True` is not accepted as an integer. Canonical hashing is `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=True)` then SHA-256.
 
 ## Canonical hashes
 
@@ -111,9 +147,11 @@ These are remaining properties of the current design, not planned features.
 ### Operations
 
 - This state layout (extra enum variant, `pending_withdrawals`, `pending_out`) is not a safe in-place upgrade of an already-initialized contract. Migrating `pactara-v9.testnet` requires a fresh account or an intentional wipe and re-init.
-- The documented testnet account may still be running older bytecode until the wasm from this repo is deployed.
+- `get_code_version` currently returns `pactara-2.0.0`. `demo.sh` and `buyer_agent.sh` abort if that view is missing or different, so an old testnet account cannot be mistaken for this source.
+- `pactara-v9.testnet` was verified as older bytecode (`get_code_version` / `get_policy` absent). Do not in-place upgrade it; use a fresh account.
 - Unit tests mock receipts; they do not prove live NEAR transfers.
-- Restricted buyer access keys (see `buyer_agent.sh`) are a NEAR account-key convention, not a contract-enforced role beyond the buyer allowlist.
+- Restricted buyer access keys are a NEAR account-key convention. The contract still authorizes `create_task` via the buyer allowlist; key permissions only limit what that account can sign. A FullAccess buyer key can call any method the account is allowed to call.
+- TEE attestation, multi-verifier consensus, and on-chain document storage are not implemented and are not planned in this prototype.
 
 ## Build and test
 
@@ -154,7 +192,13 @@ Failed verification / refund:
 ./demo.sh fail
 ```
 
-The demo generates an ephemeral verifier key, registers it, hashes real criteria/input/artifact files, uses the task id returned by the contract, submits the worker artifact, and asks `verifier.py` to query, sign, and submit. It does not hardcode task ids or placeholder hashes.
+```bash
+./demo.sh deny
+```
+
+`pass` and `fail` generate hashes and task ids at runtime, then check the on-chain task state (`Settled` or `Refunded`). They exit non-zero if the chain state does not match. `deny` shows live rejections for an unauthorized worker, an oversized amount, and worker calls to `set_policy` / `withdraw`.
+
+The demo and source are not proof that `pactara-v9.testnet` is running this wasm. Redeploy before treating testnet results as current.
 
 ## Contract methods
 
@@ -167,6 +211,6 @@ The demo generates an ephemeral verifier key, registers it, hashes real criteria
 | `submit_verification` | Signed result → `PayoutPending` or `Refunded` |
 | `on_payout` / `on_withdraw` | Private callbacks |
 | `expire_task` | Restore reserved funds after the deadline |
-| Views | `get_treasury`, `get_pending_out`, `get_task`, `get_task_state`, `get_signing_message`, `get_verifier_public_key`, `get_network_id`, `get_protocol_id` |
+| Views | `get_treasury`, `get_pending_out`, `get_policy`, `get_task`, `get_task_state`, `get_signing_message`, `get_verifier_public_key`, `get_network_id`, `get_protocol_id`, `get_code_version` |
 
 Built for the NEAR Hackathon 2026.

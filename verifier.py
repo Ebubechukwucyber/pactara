@@ -5,6 +5,15 @@ Pactara off-chain verifier.
 This program evaluates an artifact against acceptance criteria, then signs a
 domain-separated message that the contract verifies on-chain.
 
+Supported criteria subset (not full JSON Schema):
+  top-level: {"schema": { <field>: <rule>, ... }}
+  rule.type: string | integer | number | boolean | object
+  rule.required: bool (field must be present)
+  string: minLength, maxLength
+  integer/number: min, max  (Python bool is not an integer)
+  object: properties, required_keys
+Any other keyword or type is rejected before signing.
+
 A valid signature proves that the registered verifier key signed this result.
 It does not prove that the work is objectively correct.
 
@@ -41,8 +50,25 @@ from typing import Any
 
 
 PROTOCOL_ID = b"pactara-v1"
+EXPECTED_CODE_VERSION = "pactara-2.0.0"
 NETWORK_ID = b"testnet"
 DEFAULT_RPC = "https://rpc.testnet.near.org"
+ALLOWED_CRITERIA_KEYS = {"schema"}
+ALLOWED_FIELD_KEYS = {
+    "type",
+    "required",
+    "minLength",
+    "maxLength",
+    "min",
+    "max",
+    "properties",
+    "required_keys",
+}
+ALLOWED_TYPES = {"string", "integer", "number", "boolean", "object"}
+
+
+class SchemaError(ValueError):
+    pass
 
 
 def canonical_dumps(obj: Any) -> bytes:
@@ -78,6 +104,39 @@ def is_int(value: Any) -> bool:
 
 def is_number(value: Any) -> bool:
     return is_int(value) or isinstance(value, float)
+
+
+def assert_supported_rule(spec: Any, path: str) -> None:
+    if not isinstance(spec, dict):
+        raise SchemaError(f"{path}: rule must be an object")
+    extra = set(spec) - ALLOWED_FIELD_KEYS
+    if extra:
+        raise SchemaError(f"{path}: unsupported keywords {sorted(extra)}")
+    expected = spec.get("type")
+    if expected not in ALLOWED_TYPES:
+        raise SchemaError(f"{path}: unsupported or missing type {expected!r}")
+    if expected == "object":
+        properties = spec.get("properties")
+        if not isinstance(properties, dict):
+            raise SchemaError(f"{path}: object type requires properties")
+        required_keys = spec.get("required_keys", [])
+        if not isinstance(required_keys, list):
+            raise SchemaError(f"{path}: required_keys must be a list")
+        for nested_name, nested in properties.items():
+            assert_supported_rule(nested, f"{path}.{nested_name}")
+
+
+def assert_supported_criteria(criteria: Any) -> None:
+    if not isinstance(criteria, dict):
+        raise SchemaError("criteria must be a JSON object")
+    extra = set(criteria) - ALLOWED_CRITERIA_KEYS
+    if extra:
+        raise SchemaError(f"unsupported criteria keys {sorted(extra)}")
+    schema = criteria.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        raise SchemaError("criteria.schema must be a non-empty object")
+    for key, rule in schema.items():
+        assert_supported_rule(rule, key)
 
 
 def evaluate_value(value: Any, spec: Any) -> bool:
@@ -132,11 +191,10 @@ def evaluate_value(value: Any, spec: Any) -> bool:
 
 
 def evaluate(criteria: Any, artifact: Any) -> bool:
-    if not isinstance(criteria, dict) or not isinstance(artifact, dict):
+    assert_supported_criteria(criteria)
+    if not isinstance(artifact, dict):
         return False
-    schema = criteria.get("schema")
-    if not isinstance(schema, dict) or not schema:
-        return False
+    schema = criteria["schema"]
     for key, rule in schema.items():
         if not isinstance(rule, dict):
             return False
@@ -257,6 +315,23 @@ def view_call(contract_id: str, method: str, args: dict) -> Any:
     return json.loads(bytes(result).decode())
 
 
+def chain_timestamp_ns() -> int:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "pactara",
+        "method": "block",
+        "params": {"finality": "final"},
+    }
+    request = urllib.request.Request(
+        rpc_url(),
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = json.loads(response.read().decode())
+    return int(body["result"]["header"]["timestamp"])
+
+
 def bytes_from_near(value: Any) -> bytes:
     if isinstance(value, list):
         return bytes(value)
@@ -284,6 +359,10 @@ def cmd_submit(args: argparse.Namespace) -> None:
     criteria = load_json(args.criteria)
     artifact = load_json(args.artifact)
     input_obj = load_json(args.input)
+    try:
+        assert_supported_criteria(criteria)
+    except SchemaError as exc:
+        raise SystemExit(f"Criteria uses an unsupported validation subset: {exc}") from exc
 
     criteria_hash = sha256_bytes(canonical_dumps(criteria))
     input_hash = sha256_bytes(canonical_dumps(input_obj))
@@ -308,6 +387,10 @@ def cmd_submit(args: argparse.Namespace) -> None:
         raise SystemExit("Task id mismatch")
     if args.expect_worker and task["worker"] != args.expect_worker:
         raise SystemExit(f"Worker mismatch: on-chain {task['worker']}")
+    deadline = int(task["verification_deadline"])
+    now_ns = chain_timestamp_ns()
+    if deadline <= now_ns:
+        raise SystemExit("On-chain verification deadline has passed; refusing to sign")
 
     registered = view_call(args.contract, "get_verifier_public_key", {})
     sk = signing_key()
@@ -324,6 +407,12 @@ def cmd_submit(args: argparse.Namespace) -> None:
     protocol_id = view_call(args.contract, "get_protocol_id", {})
     if protocol_id != PROTOCOL_ID.decode():
         raise SystemExit(f"Unexpected protocol id: {protocol_id}")
+    code_version = view_call(args.contract, "get_code_version", {})
+    if code_version != EXPECTED_CODE_VERSION:
+        raise SystemExit(
+            f"Contract code version is {code_version!r}, expected {EXPECTED_CODE_VERSION}. "
+            "Redeploy this repository's wasm to a fresh account; do not assume testnet matches source."
+        )
     message = build_message(
         args.contract,
         args.task_id,
@@ -423,8 +512,26 @@ def cmd_self_test() -> None:
     assert not evaluate(criteria, {**good, "score": 10.5})
     assert not evaluate(criteria, {**good, "meta": "nope"})
     assert not evaluate(criteria, {**good, "meta": {}})
-    assert not evaluate({"schema": {"x": {"type": "array"}}}, {"x": []})
-    assert not evaluate({"schema": {}}, good)
+    try:
+        evaluate({"schema": {"x": {"type": "array"}}}, {"x": []})
+        raise AssertionError("array type must be rejected")
+    except SchemaError:
+        pass
+    try:
+        evaluate({"schema": {"x": {"type": "string", "pattern": "^a"}}}, {"x": "a"})
+        raise AssertionError("pattern keyword must be rejected")
+    except SchemaError:
+        pass
+    try:
+        evaluate({"schema": {}, "input": {}}, good)
+        raise AssertionError("extra criteria keys must be rejected")
+    except SchemaError:
+        pass
+    try:
+        evaluate({"schema": {}}, good)
+        raise AssertionError("empty schema must be rejected")
+    except SchemaError:
+        pass
     assert canonical_dumps({"b": 1, "a": 2}) == b'{"a":2,"b":1}'
     print("self-test passed")
 
