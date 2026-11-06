@@ -77,33 +77,13 @@ echo "Worker   : $WORKER"
 echo "Key file : $RESTRICTED_KEY"
 echo "Key pub  : $KEY_PUBLIC"
 
-echo "=== Confirm restricted key is installed on $BUYER ==="
-KEYS_OUT="$(near account list-keys "$BUYER" network-config "$NETWORK" now 2>&1)" || {
-  echo "Could not list keys for $BUYER" >&2
-  exit 1
-}
-if ! printf '%s\n' "$KEYS_OUT" | grep -F "$KEY_PUBLIC" >/dev/null; then
-  echo "Public key from the key file is not installed on $BUYER." >&2
-  echo "The signer account and the restricted key must belong together." >&2
-  exit 1
-fi
-
-if printf '%s\n' "$KEYS_OUT" | grep -A8 -F "$KEY_PUBLIC" | grep -Eqi 'full.access|FullAccess'; then
-  echo "ERROR: this key is FullAccess. Buyer keys must be function-call only (create_task)." >&2
-  exit 1
-fi
-if printf '%s\n' "$KEYS_OUT" | grep -A20 -F "$KEY_PUBLIC" | grep -Eqi 'withdraw|set_policy|register_verifier|add_authorized'; then
-  echo "ERROR: this key appears to allow privileged methods. Restrict it to create_task." >&2
-  exit 1
-fi
-if ! printf '%s\n' "$KEYS_OUT" | grep -A20 -F "$KEY_PUBLIC" | grep -Eqi 'create_task|function.access|FunctionCall'; then
-  echo "WARNING: could not confirm FunctionCall(create_task) from list-keys output. Continuing; the contract still enforces policy." >&2
-fi
+echo "=== Confirm restricted key via NEAR RPC (permission object, not text scrape) ==="
+"$PYTHON" "$ROOT/pactara_rpc.py" check-buyer-key "$BUYER" "$KEY_PUBLIC" "$CONTRACT"
 
 echo "=== Preflight: contract views ==="
 VERSION_OUT="$(near contract call-function as-read-only "$CONTRACT" get_code_version json-args '{}' network-config "$NETWORK" now)" || true
-if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.0.0'; then
-  echo "Contract $CONTRACT is not running pactara-2.0.0. Deploy this repo's wasm to a fresh account." >&2
+if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.1.0'; then
+  echo "Contract $CONTRACT is not running pactara-2.1.0. Deploy this repo's wasm to a fresh account." >&2
   exit 1
 fi
 TREASURY_OUT="$(near contract call-function as-read-only "$CONTRACT" get_treasury json-args '{}' network-config "$NETWORK" now)" || {

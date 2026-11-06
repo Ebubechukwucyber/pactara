@@ -99,6 +99,8 @@ fn assert_invariants(contract: &Pactara) {
         available.0 + reserved.0 + pending.0,
         "total == available + reserved + pending_out"
     );
+    let (ok, _, _, _, _) = contract.get_health();
+    assert!(ok, "get_health must be true after a valid transition");
 }
 
 fn setup_at(timestamp: u64) -> Pactara {
@@ -206,7 +208,15 @@ fn daily_limit_resets_at_utc_day_boundary() {
 fn pass_moves_to_payout_pending_then_settled() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
 
     assert_eq!(contract.get_task_state(task_id).unwrap(), "PayoutPending");
     let (total, available, reserved) = contract.get_treasury();
@@ -235,14 +245,22 @@ fn pass_moves_to_payout_pending_then_settled() {
 fn fail_verification_refunds() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), false);
-    verify(&mut contract, task_id, false, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        false,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
 
     assert_eq!(contract.get_task_state(task_id).unwrap(), "Refunded");
     let (total, available, reserved) = contract.get_treasury();
     assert_eq!(total.0, 10 * ONE_NEAR);
     assert_eq!(available.0, 10 * ONE_NEAR);
     assert_eq!(reserved.0, 0);
-    assert_eq!(contract.get_daily_status().1.0, 0);
+    assert_eq!(contract.get_daily_status().1 .0, 0);
     assert_invariants(&contract);
 }
 
@@ -252,7 +270,15 @@ fn invalid_verifier_signature_rejected() {
     let (mut contract, task_id) = submitted_task();
     let mut sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
     sig[0] ^= 0xff;
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
 }
 
 #[test]
@@ -260,7 +286,15 @@ fn invalid_verifier_signature_rejected() {
 fn incorrect_criteria_hash_rejected() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(9), hash_n(2), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(9), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(9),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
 }
 
 #[test]
@@ -268,7 +302,15 @@ fn incorrect_criteria_hash_rejected() {
 fn incorrect_input_hash_rejected() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(1), hash_n(9), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(9), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(9),
+        hash_n(3),
+        sig,
+    );
 }
 
 #[test]
@@ -276,7 +318,15 @@ fn incorrect_input_hash_rejected() {
 fn incorrect_artifact_hash_rejected() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(9), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(9), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(9),
+        sig,
+    );
 }
 
 #[test]
@@ -293,7 +343,15 @@ fn replayed_verification_rejected() {
         hash_n(3),
         sig.clone(),
     );
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
 }
 
 #[test]
@@ -309,7 +367,7 @@ fn expired_task_restores_available() {
     assert_eq!(total.0, 10 * ONE_NEAR);
     assert_eq!(available.0, 10 * ONE_NEAR);
     assert_eq!(reserved.0, 0);
-    assert_eq!(contract.get_daily_status().1.0, 0);
+    assert_eq!(contract.get_daily_status().1 .0, 0);
     assert_invariants(&contract);
 }
 
@@ -328,7 +386,15 @@ fn expired_task_cannot_be_expired_twice() {
 fn failed_payout_restores_balances_once() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
 
     env_with_promises(context(contract_id(), 1), vec![PromiseResult::Failed]);
     contract.on_payout(task_id);
@@ -338,7 +404,7 @@ fn failed_payout_restores_balances_once() {
     assert_eq!(available.0, 10 * ONE_NEAR);
     assert_eq!(reserved.0, 0);
     assert_eq!(contract.get_pending_out().0, 0);
-    assert_eq!(contract.get_daily_status().1.0, 0);
+    assert_eq!(contract.get_daily_status().1 .0, 0);
     assert_invariants(&contract);
 
     env_with_promises(context(contract_id(), 1), vec![PromiseResult::Failed]);
@@ -402,8 +468,8 @@ fn reserved_amount_cannot_be_withdrawn_or_paid_twice() {
 
     testing_env!(context(owner(), 1));
     contract.withdraw(U128(9 * ONE_NEAR));
-    assert_eq!(contract.get_treasury().1.0, 0);
-    assert_eq!(contract.get_treasury().2.0, ONE_NEAR);
+    assert_eq!(contract.get_treasury().1 .0, 0);
+    assert_eq!(contract.get_treasury().2 .0, ONE_NEAR);
     assert_invariants(&contract);
 
     env_with_promises(
@@ -414,15 +480,23 @@ fn reserved_amount_cannot_be_withdrawn_or_paid_twice() {
 
     submit_work(&mut contract, task_id);
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
     env_with_promises(
         context(contract_id(), 1),
         vec![PromiseResult::Successful(vec![])],
     );
     contract.on_payout(task_id);
     let after = contract.get_treasury();
-    assert_eq!(after.0.0, 0);
-    assert_eq!(after.2.0, 0);
+    assert_eq!(after.0 .0, 0);
+    assert_eq!(after.2 .0, 0);
     env_with_promises(
         context(contract_id(), 1),
         vec![PromiseResult::Successful(vec![])],
@@ -447,7 +521,15 @@ fn cannot_withdraw_reserved_funds() {
 fn unauthorized_payout_callback_rejected() {
     let (mut contract, task_id) = submitted_task();
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
     env_with_promises(context(outsider(), 1), vec![PromiseResult::Failed]);
     contract.on_payout(task_id);
 }
@@ -473,16 +555,24 @@ fn unauthorized_deposit_rejected() {
 #[test]
 fn successful_payout_keeps_daily_spent() {
     let (mut contract, task_id) = submitted_task();
-    assert_eq!(contract.get_daily_status().1.0, 100);
+    assert_eq!(contract.get_daily_status().1 .0, 100);
     let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
-    verify(&mut contract, task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
     env_with_promises(
         context(contract_id(), 1),
         vec![PromiseResult::Successful(vec![])],
     );
     contract.on_payout(task_id);
     assert_eq!(contract.get_task_state(task_id).unwrap(), "Settled");
-    assert_eq!(contract.get_daily_status().1.0, 100);
+    assert_eq!(contract.get_daily_status().1 .0, 100);
 }
 
 #[test]
@@ -490,7 +580,7 @@ fn network_id_is_testnet_and_binds_signatures() {
     let contract = setup();
     assert_eq!(contract.get_network_id(), "testnet");
     assert_eq!(contract.get_protocol_id(), "pactara-v1");
-    assert_eq!(contract.get_code_version(), "pactara-2.0.0");
+    assert_eq!(contract.get_code_version(), "pactara-2.1.0");
     testing_env!(context_deposit(owner(), ONE_NEAR, 1));
     let other = Pactara::new_with_network(
         owner(),
@@ -574,5 +664,70 @@ fn get_policy_exposes_limits_for_preflight() {
     assert_eq!(max_task.0, ONE_NEAR);
     assert_eq!(daily_limit.0, 5 * ONE_NEAR);
     assert_eq!(daily_spent.0, 0);
+    assert_invariants(&contract);
+}
+
+#[test]
+#[should_panic(expected = "No verifier registered")]
+fn unregistered_verifier_rejected() {
+    testing_env!(context_deposit(owner(), 10 * ONE_NEAR, 1));
+    let mut contract = Pactara::new(owner(), U128(ONE_NEAR), U128(5 * ONE_NEAR));
+    contract.deposit();
+    contract.add_authorized_buyer(buyer());
+    contract.add_authorized_worker(worker());
+    let task_id = create_funded_task(&mut contract, 100, u64::MAX);
+    submit_work(&mut contract, task_id);
+    testing_env!(context(submitter(), 1));
+    contract.submit_verification(
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        vec![0u8; 64],
+    );
+}
+
+#[test]
+#[should_panic(expected = "Deadline passed")]
+fn verification_after_deadline_rejected() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 1));
+    let task_id = contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), 1_000);
+    testing_env!(context(worker(), 2));
+    contract.submit_artifact(task_id, hash_n(3));
+    let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
+    testing_env!(context(submitter(), 2_000));
+    contract.submit_verification(task_id, true, hash_n(1), hash_n(2), hash_n(3), sig);
+}
+
+#[test]
+#[should_panic(expected = "Wrong state")]
+fn duplicate_artifact_submission_rejected() {
+    let mut contract = setup();
+    let task_id = create_funded_task(&mut contract, 100, u64::MAX);
+    submit_work(&mut contract, task_id);
+    submit_work(&mut contract, task_id);
+}
+
+#[test]
+#[should_panic(expected = "Invalid amount")]
+fn zero_amount_rejected() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 1));
+    contract.create_task(worker(), U128(0), hash_n(1), hash_n(2), u64::MAX);
+}
+
+#[test]
+fn expire_submitted_task_refunds() {
+    let mut contract = setup();
+    testing_env!(context(buyer(), 1));
+    let task_id = contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), 1_000);
+    testing_env!(context(worker(), 2));
+    contract.submit_artifact(task_id, hash_n(3));
+    testing_env!(context(submitter(), 1_000));
+    contract.expire_task(task_id);
+    assert_eq!(contract.get_task_state(task_id).unwrap(), "Expired");
+    assert_eq!(contract.get_treasury().1 .0, 10 * ONE_NEAR);
     assert_invariants(&contract);
 }

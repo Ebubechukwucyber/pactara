@@ -50,7 +50,7 @@ from typing import Any
 
 
 PROTOCOL_ID = b"pactara-v1"
-EXPECTED_CODE_VERSION = "pactara-2.0.0"
+EXPECTED_CODE_VERSION = "pactara-2.1.0"
 NETWORK_ID = b"testnet"
 DEFAULT_RPC = "https://rpc.testnet.near.org"
 ALLOWED_CRITERIA_KEYS = {"schema"}
@@ -282,8 +282,16 @@ def near_public_key(sk) -> str:
     return "ed25519:" + base58.b58encode(bytes(sk.verify_key)).decode()
 
 
+def network_name() -> str:
+    return os.environ.get("NEAR_NETWORK", "testnet")
+
+
 def rpc_url() -> str:
-    return os.environ.get("NEAR_RPC_URL", DEFAULT_RPC)
+    if os.environ.get("NEAR_RPC_URL"):
+        return os.environ["NEAR_RPC_URL"]
+    if network_name() == "mainnet":
+        return "https://rpc.mainnet.near.org"
+    return DEFAULT_RPC
 
 
 def view_call(contract_id: str, method: str, args: dict) -> Any:
@@ -475,7 +483,7 @@ def cmd_submit(args: argparse.Namespace) -> None:
         "sign-as",
         args.account,
         "network-config",
-        "testnet",
+        network_name(),
         "sign-with-keychain",
         "send",
     ]

@@ -110,8 +110,8 @@ echo "Signer   : $SIGNER"
 echo "Mode     : $MODE"
 
 VERSION_OUT="$(near_view get_code_version '{}' || true)"
-if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.0.0'; then
-  echo "Contract $CONTRACT is not running pactara-2.0.0 (get_code_version missing or mismatched)." >&2
+if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.1.0'; then
+  echo "Contract $CONTRACT is not running pactara-2.1.0 (get_code_version missing or mismatched)." >&2
   echo "This repo's source is not the bytecode on that account. Deploy to a fresh account." >&2
   printf '%s\n' "$VERSION_OUT" >&2
   exit 1

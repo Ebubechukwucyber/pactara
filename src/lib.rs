@@ -20,7 +20,7 @@ use near_sdk::{
 };
 
 const PROTOCOL_ID: &[u8] = b"pactara-v1";
-const CODE_VERSION: &str = "pactara-2.0.0";
+const CODE_VERSION: &str = "pactara-2.1.0";
 const DEFAULT_NETWORK_ID: &str = "testnet";
 const CALLBACK_GAS: Gas = Gas::from_tgas(50);
 
@@ -86,13 +86,19 @@ pub struct Pactara {
     pub next_withdrawal_id: u64,
     pub pending_out: u128,
     pub network_id: String,
+    pub accounting_fault: bool,
 }
 
 #[near]
 impl Pactara {
     #[init]
     pub fn new(owner: AccountId, max_amount_per_task: U128, daily_limit: U128) -> Self {
-        Self::construct(owner, max_amount_per_task, daily_limit, DEFAULT_NETWORK_ID.to_string())
+        Self::construct(
+            owner,
+            max_amount_per_task,
+            daily_limit,
+            DEFAULT_NETWORK_ID.to_string(),
+        )
     }
 
     #[init]
@@ -131,6 +137,7 @@ impl Pactara {
             next_withdrawal_id: 1,
             pending_out: 0,
             network_id,
+            accounting_fault: false,
         };
         contract.authorized_buyers.insert(owner.clone(), true);
         contract
@@ -154,22 +161,23 @@ impl Pactara {
             match self.daily_spent.checked_sub(task.amount) {
                 Some(remaining) => self.daily_spent = remaining,
                 None => {
-                    log!("daily_spent underflow; clamping to 0");
+                    self.note_fault("daily_spent underflow");
                     self.daily_spent = 0;
                 }
             }
         }
     }
 
+    fn note_fault(&mut self, reason: &str) {
+        self.accounting_fault = true;
+        log!("ACCOUNTING_FAULT: {}", reason);
+    }
+
     fn take_pending_out(&mut self, amount: u128) {
         match self.pending_out.checked_sub(amount) {
             Some(remaining) => self.pending_out = remaining,
             None => {
-                log!(
-                    "pending_out underflow (had {}, removing {}); clamping to 0",
-                    self.pending_out,
-                    amount
-                );
+                self.note_fault("pending_out underflow on callback");
                 self.pending_out = 0;
             }
         }
@@ -193,19 +201,13 @@ impl Pactara {
         );
     }
 
-    fn log_if_accounting_broken(&self) {
+    fn log_if_accounting_broken(&mut self) {
         let summed = self
             .available
             .checked_add(self.reserved)
             .and_then(|v| v.checked_add(self.pending_out));
         if summed != Some(self.total) {
-            log!(
-                "accounting warning total={} available={} reserved={} pending_out={}",
-                self.total,
-                self.available,
-                self.reserved,
-                self.pending_out
-            );
+            self.note_fault("total != available + reserved + pending_out");
         }
     }
 
@@ -215,7 +217,10 @@ impl Pactara {
     }
 
     fn can_deposit(&self, account: &AccountId) -> bool {
-        self.authorized_buyers.get(account).copied().unwrap_or(false)
+        self.authorized_buyers
+            .get(account)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn build_message(
@@ -268,8 +273,11 @@ impl Pactara {
         let caller = env::predecessor_account_id();
         assert!(self.can_deposit(&caller), "Unauthorized depositor");
         let amount = env::attached_deposit().as_yoctonear();
-        self.total += amount;
-        self.available += amount;
+        self.total = self.total.checked_add(amount).expect("total overflow");
+        self.available = self
+            .available
+            .checked_add(amount)
+            .expect("available overflow");
         self.assert_accounting();
         log!("Deposit: {}", amount);
     }
@@ -313,7 +321,7 @@ impl Pactara {
                 match self.total.checked_sub(amount) {
                     Some(remaining) => self.total = remaining,
                     None => {
-                        log!("total underflow on withdraw success; clamping to 0");
+                        self.note_fault("total underflow on withdraw success");
                         self.total = 0;
                     }
                 }
@@ -375,24 +383,36 @@ impl Pactara {
     ) -> u64 {
         let caller = env::predecessor_account_id();
         assert!(
-            self.authorized_buyers.get(&caller).copied().unwrap_or(false),
+            self.authorized_buyers
+                .get(&caller)
+                .copied()
+                .unwrap_or(false),
             "Unauthorized buyer"
         );
         assert!(
-            self.authorized_workers.get(&worker).copied().unwrap_or(false),
+            self.authorized_workers
+                .get(&worker)
+                .copied()
+                .unwrap_or(false),
             "Unauthorized worker"
         );
 
         self.update_day();
 
         let amount = amount.0;
-        assert!(amount > 0 && amount <= self.max_amount_per_task, "Invalid amount");
+        assert!(
+            amount > 0 && amount <= self.max_amount_per_task,
+            "Invalid amount"
+        );
         assert!(amount <= self.available, "Insufficient available");
         assert!(
             self.daily_spent + amount <= self.daily_limit,
             "Daily limit exceeded"
         );
-        assert!(verification_deadline > env::block_timestamp(), "Bad deadline");
+        assert!(
+            verification_deadline > env::block_timestamp(),
+            "Bad deadline"
+        );
 
         self.available -= amount;
         self.reserved += amount;
@@ -416,7 +436,12 @@ impl Pactara {
         };
         self.tasks.insert(task_id, task);
         self.assert_accounting();
-        log!("Task {} created | worker: {} | amount: {}", task_id, worker, amount);
+        log!(
+            "Task {} created | worker: {} | amount: {}",
+            task_id,
+            worker,
+            amount
+        );
         task_id
     }
 
@@ -465,7 +490,8 @@ impl Pactara {
             .as_ref()
             .expect("No verifier registered");
 
-        let message = self.build_message(task_id, &criteria_hash, &input_hash, &artifact_hash, passed);
+        let message =
+            self.build_message(task_id, &criteria_hash, &input_hash, &artifact_hash, passed);
 
         assert_eq!(signature.len(), 64, "Signature must be 64 bytes");
         let sig: &[u8; 64] = signature.as_slice().try_into().expect("signature length");
@@ -494,7 +520,11 @@ impl Pactara {
                         .with_static_gas(CALLBACK_GAS)
                         .on_payout(task_id),
                 );
-            log!("Payout pending for task {} | paying {}", task_id, task.worker);
+            log!(
+                "Payout pending for task {} | paying {}",
+                task_id,
+                task.worker
+            );
         } else {
             self.return_reserved_to_available(&task);
             task.state = TaskState::Refunded;
@@ -521,7 +551,7 @@ impl Pactara {
                         match self.total.checked_sub(amount) {
                             Some(remaining) => self.total = remaining,
                             None => {
-                                log!("total underflow on payout success; clamping to 0");
+                                self.note_fault("total underflow on payout success");
                                 self.total = 0;
                             }
                         }
@@ -537,7 +567,10 @@ impl Pactara {
                 } else if success {
                     match self.total.checked_sub(amount) {
                         Some(remaining) => self.total = remaining,
-                        None => self.total = 0,
+                        None => {
+                            self.note_fault("total underflow on payout success (unexpected state)");
+                            self.total = 0;
+                        }
                     }
                 } else {
                     self.available += amount;
@@ -545,7 +578,10 @@ impl Pactara {
             } else if success {
                 match self.total.checked_sub(amount) {
                     Some(remaining) => self.total = remaining,
-                    None => self.total = 0,
+                    None => {
+                        self.note_fault("total underflow on payout success (missing task)");
+                        self.total = 0;
+                    }
                 }
             } else {
                 self.available += amount;
@@ -596,20 +632,45 @@ impl Pactara {
         CODE_VERSION.to_string()
     }
 
+    pub fn get_health(&self) -> (bool, U128, U128, U128, U128) {
+        let summed = self
+            .available
+            .checked_add(self.reserved)
+            .and_then(|v| v.checked_add(self.pending_out));
+        let ok = !self.accounting_fault && summed == Some(self.total);
+        (
+            ok,
+            U128(self.total),
+            U128(self.available),
+            U128(self.reserved),
+            U128(self.pending_out),
+        )
+    }
+
     pub fn get_verifier_public_key(&self) -> Option<PublicKey> {
         self.verifier_public_key.clone()
     }
 
     pub fn is_authorized_buyer(&self, account: AccountId) -> bool {
-        self.authorized_buyers.get(&account).copied().unwrap_or(false)
+        self.authorized_buyers
+            .get(&account)
+            .copied()
+            .unwrap_or(false)
     }
 
     pub fn is_authorized_worker(&self, account: AccountId) -> bool {
-        self.authorized_workers.get(&account).copied().unwrap_or(false)
+        self.authorized_workers
+            .get(&account)
+            .copied()
+            .unwrap_or(false)
     }
 
     pub fn get_daily_status(&self) -> (U128, U128, u64) {
-        (U128(self.daily_limit), U128(self.daily_spent), self.current_day)
+        (
+            U128(self.daily_limit),
+            U128(self.daily_spent),
+            self.current_day,
+        )
     }
 
     pub fn get_policy(&self) -> (U128, U128, U128, u64) {
