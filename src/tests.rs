@@ -810,3 +810,21 @@ fn daily_spent_overflow_is_rejected() {
     testing_env!(context(buyer(), 1));
     contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), u64::MAX);
 }
+
+#[test]
+#[should_panic(expected = "next_task_id overflow")]
+fn next_task_id_overflow_is_rejected() {
+    let mut contract = setup();
+    contract.next_task_id = u64::MAX;
+    testing_env!(context(buyer(), 1));
+    contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), u64::MAX);
+}
+
+#[test]
+#[should_panic(expected = "next_withdrawal_id overflow")]
+fn next_withdrawal_id_overflow_is_rejected() {
+    let mut contract = setup();
+    contract.next_withdrawal_id = u64::MAX;
+    testing_env!(context(owner(), 1));
+    contract.withdraw(U128(ONE_NEAR));
+}

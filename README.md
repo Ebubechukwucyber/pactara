@@ -8,6 +8,16 @@ A valid signature proves that the **registered verifier key** signed that result
 
 **Code version:** `pactara-2.2.0` · **Network in this repo’s live deploy:** [pactara-v10.testnet](https://explorer.testnet.near.org/accounts/pactara-v10.testnet)
 
+## See Pactara in Action
+
+1. Buyer creates a task and reserves funds.
+2. Worker submits an artifact hash.
+3. Verifier evaluates the artifact and signs PASS or FAIL.
+4. Contract settles payment or restores the funds.
+5. Anyone can inspect the resulting state on NEAR testnet.
+
+Reproduce locally with [`demo.sh`](#demo-testnet). On `pactara-v10.testnet` (`pactara-2.2.0`): [PASS / Settled](https://explorer.testnet.near.org/transactions/3u4s3X9HGevoiXgB9EYCwRXzBcZi4RdnvvNCu1RgWHtm), [FAIL / Refunded](https://explorer.testnet.near.org/transactions/Bf7CMJVfUzorchVog81jCEu8d8JG2YhsywV6wqWFjzU4).
+
 ---
 
 ## Why this exists
@@ -53,7 +63,7 @@ Pactara is a NEAR contract plus thin off-chain helpers.
 - Anyone may submit a 64-byte ed25519 signature over a domain-separated message. PASS moves `reserved → pending_out` and starts a transfer (`PayoutPending`). FAIL restores reserved funds (`Refunded`).
 - The payout callback marks `Settled` only after a successful transfer, or `Refunded` if the transfer failed (balances restored once).
 - `expire_task` after the deadline on `Funded` or `Submitted` → `Expired` (funds restored). `PayoutPending` is not expired or retried.
-- Invariant: `total == available + reserved + pending_out`. Broken arithmetic is not clamped; `accounting_fault` freezes later treasury mutations.
+- Invariant: `total == available + reserved + pending_out`. Financial transitions use checked arithmetic to prevent integer wrapping. In callback and recovery paths, arithmetic inconsistencies set `accounting_fault` and freeze subsequent treasury operations that require a healthy accounting state. In other entrypoints, failed checked operations abort the current transaction rather than silently modifying balances.
 
 **Off-chain (preflight only):**
 
@@ -74,7 +84,7 @@ The contract sees the **predecessor account**, not which access key signed the t
 | **Policy-controlled buyer** | Allowlist, per-task and daily limits on-chain; optional FunctionCall key limited to `create_task`. |
 | **Verification-driven settlement** | Worker cannot self-pay. PASS/FAIL is a registered-key signature over hashes + network + contract + task id. |
 | **Explicit payout lifecycle** | PASS is `PayoutPending` until `on_payout`. Success is `Settled`; failed transfer is `Refunded` once. |
-| **Accounting fault protection** | No silent clamp to zero. First fault reason is stored; deposit/withdraw/create/verify/expire refuse further unsafe ops. |
+| **Accounting fault protection** | Callbacks and refunds skip impossible mutations and set `accounting_fault` instead of clamping. User entrypoints abort on failed checked math. |
 | **Clear trust boundary** | Signature = authorized verifier signed this message. Not TEE, not quorum, not objective truth. |
 
 ---
@@ -133,7 +143,7 @@ stateDiagram-v2
 7. **Callback.** `on_payout` is `#[private]` (predecessor must be the contract). Success: `pending_out` and `total` decrease, `Settled`. Failure: `pending_out` restored to `available`, `Refunded`. Duplicate callbacks are no-ops because the pending map entry is removed once. Callbacks do not panic after the predecessor check (a panic can strand a completed transfer).
 8. **Expiry.** After `verification_deadline`, `expire_task` on `Funded` or `Submitted` restores funds and sets `Expired`. The same task cannot be expired twice.
 
-If checked arithmetic cannot be applied, the mutation is skipped, `accounting_fault` is set with the first reason, and `get_health` reports it. Later `deposit`, `withdraw`, `create_task`, `submit_verification`, and `expire_task` abort with `Accounting fault`.
+Callbacks (`on_payout`, `on_withdraw`) and refund helpers (`return_reserved_to_available`, daily-spend restore) use `try_add` / `try_sub`: a failed mutation is skipped, the first reason is stored on `accounting_fault`, and `get_health` reports it. Later `deposit`, `withdraw`, `create_task`, `submit_verification`, and `expire_task` then abort with `Accounting fault`. Direct treasury transitions on those user methods use `checked_*().expect(...)` and abort the current transaction instead of setting a fault.
 
 ---
 
@@ -148,7 +158,7 @@ If checked arithmetic cannot be applied, the mutation is skipped, `accounting_fa
 - **Nonce.** A used nonce cannot be verified again (`Submitted` + `nonce_used`).
 - **Callbacks.** `on_payout` / `on_withdraw` require contract predecessor. Pending ids are consumed once.
 - **Reserved funds.** Owner `withdraw` spends only `available`, so reserved escrow cannot be withdrawn.
-- **Fault freeze.** Inconsistent treasury or failed checked math sets `accounting_fault` rather than inventing a balance.
+- **Fault freeze.** Callback/recovery paths that cannot apply a mutation set `accounting_fault` rather than inventing a balance. Other financial methods abort the transaction on overflow or underflow.
 
 ### Off-chain preflight (not a substitute for the contract)
 
@@ -177,7 +187,7 @@ Not fully trustless, not multi-verifier, not TEE-backed, not formally verified, 
 | [near-cli-rs](https://github.com/near/near-cli-rs) (`near`) | Demo, buyer script, deploy, view calls |
 | Bash | [`demo.sh`](demo.sh), [`buyer_agent.sh`](buyer_agent.sh) |
 
-`package.json` pins npm `near-cli`; **scripts in this README use `near-cli-rs`**. There is no frontend, no extra token, no GitHub Actions workflow in this tree.
+There is no frontend, no extra token, and no GitHub Actions workflow in this tree. Scripts call `near-cli-rs`, not npm `near-cli`.
 
 ---
 
@@ -260,14 +270,14 @@ Counts below are **tests defined in this repository** (asserted by `#[test]` / `
 
 | Suite | File | Cases |
 |-------|------|--------|
-| Rust contract | [`src/tests.rs`](src/tests.rs) | 40 |
+| Rust contract | [`src/tests.rs`](src/tests.rs) | 42 |
 | Verifier | [`test_verifier.py`](test_verifier.py) | 16 |
 | Buyer-key RPC mocks | [`test_pactara_rpc.py`](test_pactara_rpc.py) | 7 |
 | Combined helpers | [`test_integration.py`](test_integration.py) | 1 |
 
 Coverage includes unauthorized actors, hash/signature mismatch, replay, expiry, overflow, duplicate callbacks, accounting-fault freeze, exact `create_task` key shape, and network/RPC mismatch.
 
-Live-chain evidence is in **Testnet evidence** below. Local command results from this tree: `cargo test --lib` (40 passed), Python suites listed above, and the WASM release build. Re-run the commands in **Installation** to reproduce.
+Live-chain evidence is in **Testnet evidence** below. Re-run the commands in **Installation** to reproduce local tests.
 
 ---
 
@@ -326,7 +336,7 @@ Then: `deposit`, `add_authorized_worker`, `register_verifier`.
 | | |
 |--|--|
 | **Implemented** | Allowlists, caps, hash-bound tasks, ed25519 verifier, PASS/FAIL, `PayoutPending`, callback recovery, accounting fault freeze, restricted-key buyer script |
-| **Locally tested** | 40 Rust + 16 + 7 + 1 Python tests; WASM release build |
+| **Locally tested** | 42 Rust + 16 + 7 + 1 Python tests |
 | **Testnet verified** | `pactara-v10.testnet` running `pactara-2.2.0` (see evidence) |
 | **Planned / out of scope** | TEE, multi-verifier, marketplace, extra token, arbitration UI, objective work evaluation |
 

@@ -326,6 +326,12 @@ impl Pactara {
         assert!(amount > 0, "Amount must be positive");
         assert!(amount <= self.available, "Insufficient available");
 
+        let withdrawal_id = self.next_withdrawal_id;
+        let next_withdrawal_id = self
+            .next_withdrawal_id
+            .checked_add(1)
+            .expect("next_withdrawal_id overflow");
+
         self.available = self
             .available
             .checked_sub(amount)
@@ -335,8 +341,7 @@ impl Pactara {
             .checked_add(amount)
             .expect("pending_out overflow");
 
-        let withdrawal_id = self.next_withdrawal_id;
-        self.next_withdrawal_id += 1;
+        self.next_withdrawal_id = next_withdrawal_id;
         self.pending_withdrawals.insert(withdrawal_id, amount);
         self.assert_accounting();
 
@@ -471,6 +476,12 @@ impl Pactara {
             "Bad deadline"
         );
 
+        let task_id = self.next_task_id;
+        let next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .expect("next_task_id overflow");
+
         self.available = self
             .available
             .checked_sub(amount)
@@ -480,9 +491,7 @@ impl Pactara {
             .checked_add(amount)
             .expect("reserved overflow");
         self.daily_spent = next_spent;
-
-        let task_id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = next_task_id;
 
         let task = Task {
             id: task_id,
