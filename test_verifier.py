@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
+import os
 import unittest
+import unittest.mock
 
 import verifier
 
@@ -83,6 +85,34 @@ class MessageTests(unittest.TestCase):
         self.assertNotEqual(a, b)
         self.assertTrue(a.startswith(b"pactara-v1testnet"))
 
+    def test_wrong_network_changes_message(self):
+        args = ("contract.testnet", 3, b"\x01" * 32, b"\x02" * 32, b"\x03" * 32)
+        a = verifier.build_message(*args, True, b"testnet")
+        b = verifier.build_message(*args, True, b"mainnet")
+        self.assertNotEqual(a, b)
+
+
+class NetworkConsistencyTests(unittest.TestCase):
+    def test_env_mismatch_rejected(self):
+        with unittest.mock.patch.dict(os.environ, {"NEAR_NETWORK": "mainnet"}, clear=False):
+            with self.assertRaises(SystemExit):
+                verifier.assert_network_consistent("testnet")
+
+    def test_rpc_url_mismatch_rejected(self):
+        env = {
+            "NEAR_NETWORK": "testnet",
+            "NEAR_RPC_URL": "https://rpc.mainnet.near.org",
+        }
+        with unittest.mock.patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(SystemExit):
+                verifier.assert_network_consistent("testnet")
+
+    def test_matching_network_ok(self):
+        env = {"NEAR_NETWORK": "testnet", "NEAR_RPC_URL": "https://rpc.testnet.near.org"}
+        with unittest.mock.patch.dict(os.environ, env, clear=False):
+            verifier.assert_network_consistent("testnet")
+
 
 if __name__ == "__main__":
     unittest.main()
+

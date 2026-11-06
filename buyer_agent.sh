@@ -21,7 +21,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-CONTRACT="${PACTARA_CONTRACT:-pactara-v9.testnet}"
+CONTRACT="${PACTARA_CONTRACT:-pactara-v10.testnet}"
 WORKER="${PACTARA_WORKER:-pactara-v6.testnet}"
 NETWORK="${NEAR_NETWORK:-testnet}"
 PYTHON="${PYTHON:-python3}"
@@ -82,8 +82,8 @@ echo "=== Confirm restricted key via NEAR RPC (permission object, not text scrap
 
 echo "=== Preflight: contract views ==="
 VERSION_OUT="$(near contract call-function as-read-only "$CONTRACT" get_code_version json-args '{}' network-config "$NETWORK" now)" || true
-if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.1.0'; then
-  echo "Contract $CONTRACT is not running pactara-2.1.0. Deploy this repo's wasm to a fresh account." >&2
+if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.2.0'; then
+  echo "Contract $CONTRACT is not running pactara-2.2.0. Deploy this repo's wasm to a fresh account." >&2
   exit 1
 fi
 TREASURY_OUT="$(near contract call-function as-read-only "$CONTRACT" get_treasury json-args '{}' network-config "$NETWORK" now)" || {

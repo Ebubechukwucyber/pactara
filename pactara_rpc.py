@@ -13,7 +13,11 @@ DEFAULT_RPC = {
     "testnet": "https://rpc.testnet.near.org",
     "mainnet": "https://rpc.mainnet.near.org",
 }
-EXPECTED_CODE_VERSION = "pactara-2.1.0"
+EXPECTED_CODE_VERSION = "pactara-2.2.0"
+
+
+class KeyCheckError(ValueError):
+    pass
 
 
 def rpc_url() -> str:
@@ -49,35 +53,62 @@ def view_access_keys(account_id: str) -> list[dict]:
     return result.get("keys") or []
 
 
-def check_buyer_key(account_id: str, public_key: str, contract_id: str) -> None:
-    keys = view_access_keys(account_id)
+def view_function(contract_id: str, method: str, args: dict) -> Any:
+    import base64
+
+    result = rpc(
+        "query",
+        {
+            "request_type": "call_function",
+            "finality": "final",
+            "account_id": contract_id,
+            "method_name": method,
+            "args_base64": base64.b64encode(json.dumps(args).encode()).decode(),
+        },
+    )
+    raw = result.get("result")
+    if raw is None:
+        raise SystemExit(f"No result for {method}")
+    return json.loads(bytes(raw).decode())
+
+
+def check_buyer_key(
+    account_id: str,
+    public_key: str,
+    contract_id: str,
+    keys: list[dict] | None = None,
+) -> None:
+    if keys is None:
+        keys = view_access_keys(account_id)
     match = None
     for item in keys:
         if item.get("public_key") == public_key:
             match = item
             break
     if match is None:
-        raise SystemExit(f"Public key is not installed on {account_id}")
+        raise KeyCheckError(f"Public key is not installed on {account_id}")
     permission = match.get("access_key", {}).get("permission")
+    if permission is None:
+        raise KeyCheckError("Missing access_key.permission")
     if permission == "FullAccess":
-        raise SystemExit("Buyer key is FullAccess; it must be function-call only (create_task)")
+        raise KeyCheckError("Buyer key is FullAccess; it must be function-call only (create_task)")
     if not isinstance(permission, dict) or "FunctionCall" not in permission:
-        raise SystemExit(f"Buyer key is not a FunctionCall key: {permission!r}")
+        raise KeyCheckError(f"Buyer key is not a FunctionCall key: {permission!r}")
     fn = permission["FunctionCall"]
     receiver = fn.get("receiver_id")
-    methods = fn.get("method_names") or []
+    methods = fn.get("method_names")
     if receiver != contract_id:
-        raise SystemExit(f"Buyer key receiver is {receiver!r}, expected {contract_id}")
-    if methods and "create_task" not in methods:
-        raise SystemExit(f"Buyer key methods {methods} do not include create_task")
-    privileged = {"withdraw", "set_policy", "register_verifier", "add_authorized_buyer", "add_authorized_worker"}
-    if any(name in privileged for name in methods):
-        raise SystemExit(f"Buyer key allows privileged methods: {methods}")
-    print("Buyer key is FunctionCall")
+        raise KeyCheckError(f"Buyer key receiver is {receiver!r}, expected {contract_id}")
+    if not isinstance(methods, list):
+        raise KeyCheckError("Buyer key method_names is missing")
+    if methods != ["create_task"]:
+        raise KeyCheckError(
+            f"Buyer key methods must be exactly ['create_task'], got {methods!r}"
+        )
+    print("Buyer key is FunctionCall create_task only")
     print(f"receiver={receiver}")
-    print(f"methods={methods or ['(any method on receiver; restrict to create_task)']}")
-    if not methods:
-        raise SystemExit("Buyer key allows every method on the contract; restrict it to create_task")
+    allowance = fn.get("allowance")
+    print(f"allowance={allowance}")
 
 
 def main() -> None:
@@ -87,7 +118,14 @@ def main() -> None:
     if cmd == "check-buyer-key":
         if len(sys.argv) != 5:
             raise SystemExit("check-buyer-key <account> <public_key> <contract>")
-        check_buyer_key(sys.argv[2], sys.argv[3], sys.argv[4])
+        try:
+            check_buyer_key(sys.argv[2], sys.argv[3], sys.argv[4])
+        except KeyCheckError as exc:
+            raise SystemExit(str(exc)) from exc
+    elif cmd == "view":
+        if len(sys.argv) != 5:
+            raise SystemExit("view <contract> <method> <json-args>")
+        print(json.dumps(view_function(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))))
     else:
         raise SystemExit(f"Unknown command {cmd}")
 

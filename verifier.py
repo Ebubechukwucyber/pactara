@@ -50,7 +50,7 @@ from typing import Any
 
 
 PROTOCOL_ID = b"pactara-v1"
-EXPECTED_CODE_VERSION = "pactara-2.1.0"
+EXPECTED_CODE_VERSION = "pactara-2.2.0"
 NETWORK_ID = b"testnet"
 DEFAULT_RPC = "https://rpc.testnet.near.org"
 ALLOWED_CRITERIA_KEYS = {"schema"}
@@ -286,12 +286,34 @@ def network_name() -> str:
     return os.environ.get("NEAR_NETWORK", "testnet")
 
 
+KNOWN_RPC_NETWORKS = {
+    "https://rpc.testnet.near.org": "testnet",
+    "https://rpc.mainnet.near.org": "mainnet",
+}
+
+
 def rpc_url() -> str:
     if os.environ.get("NEAR_RPC_URL"):
         return os.environ["NEAR_RPC_URL"]
     if network_name() == "mainnet":
         return "https://rpc.mainnet.near.org"
     return DEFAULT_RPC
+
+
+def assert_network_consistent(contract_network: str) -> None:
+    if not isinstance(contract_network, str) or not contract_network:
+        raise SystemExit("Contract get_network_id must return a non-empty string")
+    env_network = os.environ.get("NEAR_NETWORK")
+    if env_network and env_network != contract_network:
+        raise SystemExit(
+            f"NEAR_NETWORK={env_network!r} does not match contract network_id={contract_network!r}"
+        )
+    url = os.environ.get("NEAR_RPC_URL") or rpc_url()
+    mapped = KNOWN_RPC_NETWORKS.get(url.rstrip("/"))
+    if mapped and mapped != contract_network:
+        raise SystemExit(
+            f"RPC endpoint {url} is for {mapped}, contract network_id is {contract_network}"
+        )
 
 
 def view_call(contract_id: str, method: str, args: dict) -> Any:
@@ -410,8 +432,7 @@ def cmd_submit(args: argparse.Namespace) -> None:
 
     passed = evaluate(criteria, artifact)
     network_id = view_call(args.contract, "get_network_id", {})
-    if not isinstance(network_id, str) or not network_id:
-        raise SystemExit("Contract get_network_id must return a non-empty string")
+    assert_network_consistent(network_id)
     protocol_id = view_call(args.contract, "get_protocol_id", {})
     if protocol_id != PROTOCOL_ID.decode():
         raise SystemExit(f"Unexpected protocol id: {protocol_id}")

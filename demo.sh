@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-CONTRACT="${PACTARA_CONTRACT:-pactara-v9.testnet}"
+CONTRACT="${PACTARA_CONTRACT:-pactara-v10.testnet}"
 WORKER="${PACTARA_WORKER:-pactara-v6.testnet}"
 SIGNER="${PACTARA_SIGNER:-$CONTRACT}"
 MODE="${1:-pass}"
@@ -58,18 +58,23 @@ near_view() {
 
 extract_task_id() {
   local output="$1"
-  local from_log
+  local from_log from_ret
   from_log="$(printf '%s\n' "$output" | grep -Eo 'Task [0-9]+ created' | tail -n1 | awk '{print $2}' || true)"
   if [[ -n "${from_log:-}" ]]; then
     echo "$from_log"
-    return
+    return 0
   fi
-  printf '%s\n' "$output" | grep -Eo 'Function execution return value:[[:space:]]*[0-9]+' | tail -n1 | awk '{print $NF}'
+  from_ret="$(printf '%s\n' "$output" | grep -E 'Function execution return value' -A5 | grep -Eo '^[0-9]+$' | tail -n1 || true)"
+  if [[ -n "${from_ret:-}" ]]; then
+    echo "$from_ret"
+    return 0
+  fi
+  printf '%s\n' "$output" | grep -Eo '^[0-9]+$' | tail -n1 || true
 }
 
 view_bool() {
   local output="$1"
-  if printf '%s\n' "$output" | grep -Eq 'return value:[[:space:]]*true'; then
+  if printf '%s\n' "$output" | grep -Eq '(^|[[:space:]])true([[:space:]]|$)'; then
     echo true
   else
     echo false
@@ -90,6 +95,8 @@ expect_reject() {
 print_treasury() {
   echo "Treasury ($1):"
   near_view get_treasury '{}'
+  echo "Health ($1):"
+  near_view get_health '{}'
 }
 
 require_state() {
@@ -110,8 +117,8 @@ echo "Signer   : $SIGNER"
 echo "Mode     : $MODE"
 
 VERSION_OUT="$(near_view get_code_version '{}' || true)"
-if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.1.0'; then
-  echo "Contract $CONTRACT is not running pactara-2.1.0 (get_code_version missing or mismatched)." >&2
+if ! printf '%s\n' "$VERSION_OUT" | grep -Fq 'pactara-2.2.0'; then
+  echo "Contract $CONTRACT is not running pactara-2.2.0 (get_code_version missing or mismatched)." >&2
   echo "This repo's source is not the bytecode on that account. Deploy to a fresh account." >&2
   printf '%s\n' "$VERSION_OUT" >&2
   exit 1

@@ -99,8 +99,11 @@ fn assert_invariants(contract: &Pactara) {
         available.0 + reserved.0 + pending.0,
         "total == available + reserved + pending_out"
     );
-    let (ok, _, _, _, _) = contract.get_health();
-    assert!(ok, "get_health must be true after a valid transition");
+    let (ok, _, _, _, _, reason) = contract.get_health();
+    assert!(
+        ok,
+        "get_health must be true after a valid transition, fault={reason}"
+    );
 }
 
 fn setup_at(timestamp: u64) -> Pactara {
@@ -580,7 +583,7 @@ fn network_id_is_testnet_and_binds_signatures() {
     let contract = setup();
     assert_eq!(contract.get_network_id(), "testnet");
     assert_eq!(contract.get_protocol_id(), "pactara-v1");
-    assert_eq!(contract.get_code_version(), "pactara-2.1.0");
+    assert_eq!(contract.get_code_version(), "pactara-2.2.0");
     testing_env!(context_deposit(owner(), ONE_NEAR, 1));
     let other = Pactara::new_with_network(
         owner(),
@@ -730,4 +733,80 @@ fn expire_submitted_task_refunds() {
     assert_eq!(contract.get_task_state(task_id).unwrap(), "Expired");
     assert_eq!(contract.get_treasury().1 .0, 10 * ONE_NEAR);
     assert_invariants(&contract);
+}
+
+#[test]
+#[should_panic(expected = "Accounting fault")]
+fn accounting_fault_freezes_new_tasks() {
+    let (mut contract, task_id) = submitted_task();
+    let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
+    contract.pending_out = 0;
+    env_with_promises(
+        context(contract_id(), 1),
+        vec![PromiseResult::Successful(vec![])],
+    );
+    contract.on_payout(task_id);
+    assert!(contract.accounting_fault);
+    assert!(!contract.accounting_fault_reason.is_empty());
+    assert_eq!(contract.get_task_state(task_id).unwrap(), "Settled");
+    testing_env!(context(buyer(), 1));
+    contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), u64::MAX);
+}
+
+#[test]
+fn duplicate_success_callback_does_not_reduce_total_twice() {
+    let (mut contract, task_id) = submitted_task();
+    let sig = sign(&contract, task_id, hash_n(1), hash_n(2), hash_n(3), true);
+    verify(
+        &mut contract,
+        task_id,
+        true,
+        hash_n(1),
+        hash_n(2),
+        hash_n(3),
+        sig,
+    );
+    env_with_promises(
+        context(contract_id(), 1),
+        vec![PromiseResult::Successful(vec![])],
+    );
+    contract.on_payout(task_id);
+    let total_after = contract.get_treasury().0 .0;
+    env_with_promises(
+        context(contract_id(), 1),
+        vec![PromiseResult::Successful(vec![])],
+    );
+    contract.on_payout(task_id);
+    assert_eq!(contract.get_treasury().0 .0, total_after);
+    assert_eq!(contract.get_task_state(task_id).unwrap(), "Settled");
+    assert_invariants(&contract);
+}
+
+#[test]
+#[should_panic(expected = "total overflow")]
+fn deposit_overflow_is_rejected() {
+    let mut contract = setup();
+    contract.total = u128::MAX;
+    contract.available = u128::MAX;
+    testing_env!(context_deposit(buyer(), 1, 1));
+    contract.deposit();
+}
+
+#[test]
+#[should_panic(expected = "daily_spent overflow")]
+fn daily_spent_overflow_is_rejected() {
+    let mut contract = setup();
+    contract.daily_spent = u128::MAX;
+    contract.daily_limit = u128::MAX;
+    testing_env!(context(buyer(), 1));
+    contract.create_task(worker(), U128(100), hash_n(1), hash_n(2), u64::MAX);
 }

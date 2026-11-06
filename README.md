@@ -43,7 +43,7 @@ The contract is the authority. Scripts only fail early.
 | Payout/FAIL/expiry | amount returns to `available`; same-day `daily_spent` restored |
 | Withdraw | `available → pending_out`; success drops `total`; failure restores `available` |
 
-`get_health` reports whether that identity still holds. Callbacks never panic after the predecessor check (a panic would strand a completed transfer). An impossible underflow sets `accounting_fault` and is visible on `get_health`.
+`get_health` returns `(healthy, total, available, reserved, pending_out, fault_reason)`. Callbacks never panic after the predecessor check (a panic would strand a completed transfer). Arithmetic that cannot be applied is skipped rather than clamped; the first fault reason is stored, `accounting_fault` is set, and later deposits, withdrawals, task creation, verification, and expiry are frozen.
 
 ## Verification
 
@@ -81,10 +81,10 @@ Inspect: `near account list-keys "$PACTARA_BUYER" network-config testnet now`
 
 ## Demo
 
-Requires `near-cli-rs`, `pip install -r requirements.txt`, and a deployment whose `get_code_version` is **`pactara-2.1.0`**.
+Requires `near-cli-rs`, `pip install -r requirements.txt`, and a deployment whose `get_code_version` is **`pactara-2.2.0`**.
 
 ```bash
-export PACTARA_CONTRACT=<fresh-account.testnet>   # do not in-place upgrade pactara-v9
+export PACTARA_CONTRACT=pactara-v10.testnet   # or another fresh account; do not in-place upgrade pactara-v9
 export PACTARA_SIGNER=$PACTARA_CONTRACT
 export PACTARA_WORKER=<worker.testnet>
 ./demo.sh pass    # Scenario A: Settled
@@ -104,12 +104,14 @@ cargo test --lib
 cargo build --target wasm32-unknown-unknown --release
 python3 verifier.py self-test
 python3 test_verifier.py
+python3 test_pactara_rpc.py
+python3 test_integration.py
 bash -n demo.sh buyer_agent.sh
 ```
 
 ## Deployment
 
-`get_code_version` = `pactara-2.1.0`. `pactara-v9.testnet` is older bytecode. Deploy this wasm to a **new** account (state layout changed).
+`get_code_version` = `pactara-2.2.0` on **`pactara-v10.testnet`**. `pactara-v9.testnet` is older bytecode. Do not in-place upgrade old accounts (state layout changed).
 
 ```bash
 cargo build --target wasm32-unknown-unknown --release
@@ -134,10 +136,14 @@ near contract deploy <NEW_ACCOUNT> \
 
 | Kind | Status |
 |------|--------|
-| Rust unit tests | Local, including callback recovery |
-| Python verifier tests | Local |
-| Testnet `pactara-v9.testnet` | Old code; not this version |
-| Live PASS/FAIL/deny on this wasm | Requires a fresh deploy |
+| Rust unit tests | Local: 40 passed |
+| Python verifier / RPC / integration tests | Local: 16 + 7 + 1 passed |
+| WASM `pactara-2.2.0` | Built; SHA-256 `8c4836e27e1e1abe381f728c0680daaa443347fa3a2a08355e992072db252233` |
+| Testnet `pactara-v10.testnet` | Deployed and initialized (`4bMeQ7ExY1hWGZaqN24kSu273WGVbQR7TyMcEC6zztU6`) |
+| Live PASS | Task 4 `Settled`; payout [3u4s3X9HGevoiXgB9EYCwRXzBcZi4RdnvvNCu1RgWHtm](https://explorer.testnet.near.org/transactions/3u4s3X9HGevoiXgB9EYCwRXzBcZi4RdnvvNCu1RgWHtm) |
+| Live FAIL | Task 5 `Refunded`; [Bf7CMJVfUzorchVog81jCEu8d8JG2YhsywV6wqWFjzU4](https://explorer.testnet.near.org/transactions/Bf7CMJVfUzorchVog81jCEu8d8JG2YhsywV6wqWFjzU4) |
+| Live deny | Unauthorized worker / over-limit / worker `set_policy` / worker `withdraw` rejected |
+| Failed-transfer recovery | Local unit tests; not forced on testnet |
 
 ## Limitations
 
