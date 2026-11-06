@@ -10,3 +10,11 @@ verifier.sk
 *.sk
 __pycache__/
 .pytest_cache/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+*.swp
+neardev/

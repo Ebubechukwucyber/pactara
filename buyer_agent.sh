@@ -3,7 +3,7 @@
 # The contract remains the policy authority; this script only fails early.
 #
 # Required configuration:
-#   PACTARA_CONTRACT        contract account (default: pactara-v9.testnet)
+#   PACTARA_CONTRACT        contract account (default: pactara-v10.testnet)
 #   PACTARA_WORKER          worker account (default: pactara-v6.testnet)
 #   PACTARA_RESTRICTED_KEY  path to the buyer access-key JSON
 #   PACTARA_BUYER           signer account; must match account_id in the key file
